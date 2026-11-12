@@ -50,6 +50,29 @@
   h2 .compte { font-weight: 400; color: var(--muted); font-size: 13px; }
   progress { grid-column: 1 / -1; width: 100%; height: 6px; accent-color: var(--accent); }
   .vide { padding: 14px; color: var(--muted); font-size: 14px; }
+  section.demande { margin-top: 36px; padding: 20px; background: var(--card); border: 1px solid var(--line); border-radius: 12px; }
+  section.demande h2 { margin-top: 0; }
+  .types { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 16px; padding: 0; border: 0; }
+  .types legend { font-size: 13px; color: var(--muted); margin-bottom: 6px; padding: 0; }
+  .types label { margin: 0; display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; cursor: pointer;
+                 border: 1px solid var(--line); border-radius: 99px; color: var(--ink); font-size: 14px; }
+  .types input { accent-color: var(--accent); margin: 0; }
+  .types label:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); }
+  .champs { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  @media (max-width: 560px) { .champs { grid-template-columns: 1fr; } }
+  textarea { width: 100%; min-height: 64px; padding: 10px 12px; font: inherit; color: var(--ink); resize: vertical;
+             background: var(--card); border: 1px solid var(--line); border-radius: 8px; margin-bottom: 12px; }
+  textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  .actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+  .actions label { margin: 0; display: inline-flex; gap: 6px; align-items: center; color: var(--ink); font-size: 14px; }
+  button.primaire { color: #fff; background: var(--accent); border-color: var(--accent); font-size: 14px; padding: 8px 16px; }
+  button.primaire:hover { filter: brightness(1.1); background: var(--accent); }
+  button:disabled { opacity: .5; cursor: default; }
+  #res-etat { font-size: 14px; color: var(--muted); margin: 16px 0 8px; overflow-wrap: anywhere; }
+  #res-etat a { color: var(--accent); }
+  #resultat { white-space: pre-wrap; overflow-wrap: anywhere; font: 13px/1.55 ui-monospace, Consolas, monospace;
+              background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 14px; margin: 0;
+              max-height: 520px; overflow: auto; }
 </style>
 </head>
 <body>
@@ -73,6 +96,38 @@
 
   <ul id="envois" hidden></ul>
 
+  <section class="demande" aria-labelledby="titre-demande">
+    <h2 id="titre-demande">Demander sur mes cours</h2>
+    <fieldset class="types">
+      <legend>Je veux</legend>
+      <label><input type="radio" name="type" value="fiche" checked> une fiche de révision</label>
+      <label><input type="radio" name="type" value="exercices"> des exercices corrigés</label>
+      <label><input type="radio" name="type" value="synthese"> une synthèse</label>
+      <label><input type="radio" name="type" value="qcm"> un QCM</label>
+      <label><input type="radio" name="type" value="question"> une réponse à une question</label>
+    </fieldset>
+    <div class="champs">
+      <div>
+        <label for="d-matiere">Matière du wiki</label>
+        <input type="text" id="d-matiere" list="sujets" placeholder="toutes" autocomplete="off">
+        <datalist id="sujets"></datalist>
+      </div>
+      <div>
+        <label for="d-sujet">Sujet ou question</label>
+        <input type="text" id="d-sujet" placeholder="ex. le modèle OSI" autocomplete="off">
+      </div>
+    </div>
+    <div class="hint" style="margin-top:6px">Claude ne se sert que des pages de ton wiki les plus proches du sujet.</div>
+    <label for="d-consigne">Précisions (facultatif)</label>
+    <textarea id="d-consigne" placeholder="ex. niveau examen, insister sur les pièges, 15 questions…"></textarea>
+    <div class="actions">
+      <label><input type="checkbox" id="d-enregistrer" checked> Enregistrer dans le wiki</label>
+      <button class="primaire" id="d-envoyer">Générer</button>
+    </div>
+    <div id="res-etat" role="status" hidden></div>
+    <pre id="resultat" hidden></pre>
+  </section>
+
   <h2>Traitements <button id="relancer" title="Retraite les PDF restés en attente dans inbox/">Relancer les PDF en attente</button></h2>
   <ul id="jobs"><li class="vide">Aucun dépôt pour l'instant.</li></ul>
 
@@ -83,6 +138,7 @@
 const $ = s => document.querySelector(s);
 const zone = $("#zone"), input = $("#fichiers"), envois = $("#envois");
 $("#wiki").href = `${location.protocol}//${location.hostname}:3000/`;
+fetch("/api/config").then(r => r.json()).then(c => { if (c.wiki) $("#wiki").href = c.wiki + "/"; }).catch(() => {});
 try { $("#matiere").value = localStorage.getItem("matiere") || ""; } catch {}
 
 const el = (tag, cls, txt) => { const e = document.createElement(tag); if (cls) e.className = cls; if (txt != null) e.textContent = txt; return e; };
@@ -170,7 +226,44 @@ $("#relancer").onclick = async () => {
   rafraichir();
 };
 
-matieres(); rafraichir();
+async function sujets() {
+  try {
+    const l = await (await fetch("/api/sujets")).json();
+    $("#sujets").replaceChildren(...l.map(m => Object.assign(document.createElement("option"), { value: m })));
+  } catch {}
+}
+
+$("#d-envoyer").onclick = async () => {
+  const sujet = $("#d-sujet").value.trim(), etat = $("#res-etat"), res = $("#resultat"), btn = $("#d-envoyer");
+  if (!sujet) { $("#d-sujet").focus(); return; }
+  const d = { type: document.querySelector("input[name=type]:checked").value, matiere: $("#d-matiere").value.trim(),
+              sujet, consigne: $("#d-consigne").value.trim(), enregistrer: $("#d-enregistrer").checked };
+  btn.disabled = true; etat.hidden = false; etat.textContent = "Envoi…"; res.hidden = true;
+  try {
+    const r = await fetch("/api/demande", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(d) });
+    const job = await r.json();
+    if (!r.ok) throw new Error(job.erreur || `HTTP ${r.status}`);
+    rafraichir();
+    for (;;) {  // une demande prend de quelques secondes à une minute : on suit son état
+      await new Promise(ok => setTimeout(ok, 2000));
+      const s = await (await fetch(`/api/demande?id=${job.id}`)).json();
+      etat.textContent = s.detail || s.etat;
+      if (["ok", "erreur", "attente", "interrompu"].includes(s.etat)) {
+        if (s.markdown) { res.textContent = s.markdown; res.hidden = false; }
+        if (s.chemin) {
+          etat.textContent = "Enregistrée dans le wiki : ";
+          const a = el("a", null, "/" + s.chemin.replace(/\.md$/, ""));
+          a.href = $("#wiki").href + s.chemin.replace(/\.md$/, ""); a.target = "_blank";
+          etat.append(a);
+        }
+        break;
+      }
+    }
+  } catch (e) { etat.textContent = "Échec : " + e.message; }
+  btn.disabled = false; rafraichir(); sujets();
+};
+
+matieres(); sujets(); rafraichir();
 setInterval(rafraichir, 3000);
 </script>
 </body>

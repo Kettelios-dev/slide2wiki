@@ -11,7 +11,7 @@ Chaque appel est journalisé dans claude-usage.csv (tokens) pour vérifier que �
 Reprise : les parties déjà faites sont gardées dans md/<cours>-<empreinte>.claude.json (un quota atteint ne refait rien de payé).
   python3 integrer.py cours.pdf [matiere]   # traite un PDF à la main (sinon appelé par watcher.handle)
 """
-import collections, csv, datetime, hashlib, json, math, os, re, subprocess, sys, time
+import collections, csv, datetime, hashlib, json, math, os, re, subprocess, sys, time, unicodedata
 from pathlib import Path
 import gitsync
 import watcher as w
@@ -54,7 +54,9 @@ def front(text):
 
 
 def tokens(text):
-    return [t for t in re.findall(r"[a-z0-9]{3,}", w.slug(text).replace("-", " ")) if t not in STOP]
+    # pas w.slug() : il coupe à 80 caractères, la recherche ne voyait que le début des pages et des cours
+    text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode().lower()
+    return [t for t in re.findall(r"[a-z0-9]{3,}", text) if t not in STOP]
 
 
 STOP = set("les des une pour par sur dans avec est sont pas que qui son ses aux cette ces elle ils mais plus "
@@ -422,6 +424,9 @@ def selftest():
     assert "tags: web, xss" in f and "published: true" in f and "editor: markdown" in f
     assert rank("faille xss javascript", ["web/xss.md"], ov) == ["web/xss.md"]
     assert rank("registre processeur", ["web/xss.md"], ov) == []
+    long_title = "---\ntitle: Création et utilisation d'objets en PHP\ndescription: Constructeur et new\n---\n## A\n"
+    assert rank("constructeur", ["p.md"], {"p.md": long_title}) == ["p.md"]  # mot au-delà de 80 caractères
+    assert "heritage" in tokens("x " * 60 + "Héritage")  # requête longue (texte d'un cours) lue en entier
     lines = [(p, "x" * 9000) for p in range(1, 9)]
     plan = {"chapitres": [{"titre": "A", "pages": [1, 2]}, {"titre": "B", "pages": [3, 7]}]}
     assert units(lines, plan) == [("A", 1, 2), ("B", 3, 4), ("B", 5, 6), ("B", 7, 8)]  # page 8 (Docling) à la fin

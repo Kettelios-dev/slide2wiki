@@ -69,6 +69,13 @@ Dépôt injoignable avant un cours : le PDF reste « en attente », rien n'est p
 
 Mettre tous les cours d'une matière dans la même matière : c'est ce qui permet de compléter les pages au lieu de les dupliquer.
 
+### Demander sur ses cours
+
+Sous la zone de dépôt, **Demander sur mes cours** : choisir ce que tu veux (**fiche de révision**, **exercices corrigés**, **synthèse**, **QCM** ou **réponse à une question**), la matière, le sujet (« le modèle OSI », « les pointeurs »…) et des précisions si besoin (« niveau examen », « 15 questions »).
+- Claude ne s'appuie que sur les **pages de ton wiki** les plus proches du sujet (pas sur ses connaissances générales) ; si elles ne suffisent pas, il le dit au lieu d'inventer.
+- Le résultat s'affiche sur la page. Avec **Enregistrer dans le wiki**, il devient une nouvelle page `<matière>/fiches/…` (ou `exercices/`, `syntheses/`, `qcm/`, `questions/`), avec la liste des pages utilisées en bas, en un commit (envoyé vers ton Wiki.js s'il est branché). Une page existante n'est jamais écrasée.
+- Coût : un appel, ≈ 15 000 tokens d'entrée au plus (les pages sources sont plafonnées), noté dans `data/claude-usage.csv`.
+
 ### Adapter à ses cours
 
 `regles.md` contient les consignes données à Claude (organisation, style des pages, exactitude). Remplir au moins la section **Contexte** (formation, remarques). Le fichier est relu à chaque cours : pas besoin de reconstruire l'image.
@@ -105,7 +112,7 @@ Sauvegarder `data/` suffit.
 - « récupération du dépôt distant impossible » : URL, jeton (expiré ?) ou droits d'écriture de `WIKI_GIT_REMOTE` ; le jeton n'apparaît jamais dans les messages.
 - « jeton Claude absent » : `.env` non rempli, ou modifié sans relancer `docker compose up -d`.
 - « Docling injoignable » : le conteneur `docling` démarre encore (premier lancement) ; attendre puis **Relancer**.
-- Auto-tests : `docker compose run --rm --entrypoint sh app -c "python3 integrer.py --selftest && python3 watcher.py --selftest && python3 structure.py --selftest && python3 upload.py --selftest && python3 gitsync.py --selftest"`.
+- Auto-tests : `docker compose run --rm --entrypoint sh app -c "python3 integrer.py --selftest && python3 watcher.py --selftest && python3 structure.py --selftest && python3 upload.py --selftest && python3 gitsync.py --selftest && python3 demandes.py --selftest"`.
 
 ## Licence
 

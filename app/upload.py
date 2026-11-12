@@ -9,6 +9,7 @@ import json, os, queue, re, subprocess, threading, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
+import demandes
 import watcher as w
 
 PORT = int(os.environ.get("UPLOAD_PORT", "8000"))
@@ -17,6 +18,7 @@ PAGE = Path(__file__).with_name("upload.html").read_bytes()
 HISTORY = w.ROOT / "historique.jsonl"  # hors du wiki : pas dans Git ni dans Wiki.js
 
 jobs, by_path, todo, lock = [], {}, queue.Queue(), threading.Lock()
+results = {}  # id de demande -> page produite (markdown, chemin) ; les 20 dernières, en mémoire seulement
 
 
 def log(job, path=None, **extra):
@@ -88,9 +90,31 @@ def add_job(pdf):
     return job
 
 
+def add_request(d):
+    """Une demande (fiche, exercices…) passe par la même file que les PDF : un seul travail à la fois sur le wiki."""
+    label = demandes.TYPES[d["type"]][1]
+    with lock:
+        job = {"id": str(time.time_ns()), "nom": f"{label} : {d['sujet']}", "matiere": d.get("matiere", ""),
+               "etat": "en file", "detail": "", "t": time.time(), "depot": time.time(), "demande": True}
+        jobs.append(job)
+        log(job)
+    todo.put((job, d))
+    return job
+
+
 def worker():
     while True:
         job, pdf = todo.get()
+        if job.get("demande"):
+            job["etat"] = "en cours"
+            etat, detail, page, path = demandes.run(pdf, step=lambda s: job.update(detail=s))
+            with lock:
+                results[job["id"]] = {"markdown": page, "chemin": path}
+                for old in list(results)[:-20]:
+                    del results[old]
+                job.update(etat=etat, detail=detail, t=time.time())
+                log(job, fin=job["t"])
+            continue
         if not pdf.exists():  # déjà traité par un job précédent (relance en double)
             etat, detail = "ok", "déjà traité"
         else:
@@ -121,6 +145,19 @@ class H(BaseHTTPRequestHandler):
         if path == "/api/historique":
             with lock:
                 return self.send(200, history(live={j["id"]: j for j in jobs}))
+        if path == "/api/demande":  # résultat d'une demande : état, et la page produite une fois finie
+            jid = parse_qs(urlparse(self.path).query).get("id", [""])[0]
+            with lock:
+                job = next((j for j in jobs if j["id"] == jid), None)
+                if not job:
+                    return self.send(404, {"erreur": "demande inconnue"})
+                return self.send(200, {k: job[k] for k in ("etat", "detail")} | results.get(jid, {}))
+        if path == "/api/config":  # adresse du wiki pour les liens de la page (WIKI_SITE_URL du .env)
+            return self.send(200, {"wiki": os.environ.get("WIKI_SITE_URL", "").rstrip("/")})
+        if path == "/api/sujets":  # matières déjà présentes dans le wiki (dossiers racine)
+            names = sorted((d.name for d in w.WIKI.iterdir() if d.is_dir() and not d.name.startswith(".")), key=str.lower) \
+                if w.WIKI.exists() else []
+            return self.send(200, names)
         if path == "/api/matieres":
             names = {d.name for base in (w.INBOX, w.DONE, w.FAILED) if base.exists()
                      for d in base.iterdir() if d.is_dir() and not d.name.startswith("_")}
@@ -133,6 +170,17 @@ class H(BaseHTTPRequestHandler):
             en_file = {str(p) for _, p in list(todo.queue)}
             n = [add_job(p) for p in w.pending() if str(p) not in en_file]
             return self.send(200, {"relances": len(n)})
+        if u.path == "/api/demande":
+            try:
+                d = json.loads(self.rfile.read(min(int(self.headers.get("Content-Length") or 0), 20000)) or b"{}")
+            except ValueError:
+                return self.send(400, {"erreur": "JSON invalide"})
+            d = {"type": str(d.get("type", "")), "matiere": clean(str(d.get("matiere", ""))),
+                 "sujet": str(d.get("sujet", "")).strip()[:200], "consigne": str(d.get("consigne", "")).strip()[:2000],
+                 "enregistrer": bool(d.get("enregistrer"))}
+            if d["type"] not in demandes.TYPES or not d["sujet"]:
+                return self.send(400, {"erreur": "type de demande ou sujet manquant"})
+            return self.send(200, add_request(d))
         if u.path != "/api/upload":
             return self.send(404, {"erreur": "introuvable"})
 
