@@ -260,11 +260,32 @@ def parse(answer):
     return block("FICHIER"), block("AJOUT"), (report.group(1).strip() if report else "")
 
 
+TRAILING = {"sources", "voir-aussi", "references", "liens", "liens-utiles", "ressources", "bibliographie",
+            "pour-aller-plus-loin"}  # sections de fin de page : une section ajoutée se place avant elles
+
+
+def insert_section(page, section):
+    """La section avant les sections de fin (« Voir aussi », « Sources »…), sinon à la fin de la page."""
+    lines, fence, heads = page.rstrip("\n").split("\n"), False, []
+    for i, line in enumerate(lines):
+        if line.lstrip().startswith("```"):
+            fence = not fence  # un « ## » dans un bloc de code n'est pas un titre
+        elif not fence and line.startswith("## "):
+            heads.append(i)
+    cut = len(lines)
+    for i in reversed(heads):
+        if w.slug(lines[i][3:]) not in TRAILING:
+            break
+        cut = i
+    before, after = "\n".join(lines[:cut]).rstrip(), "\n".join(lines[cut:])
+    return f"{before}\n\n{section.strip()}\n" + (f"\n{after}\n" if after else "")
+
+
 def append_section(path, text, long, overlay):
     """Page longue + section ajoutée, ou None si l'ajout n'est pas acceptable (page non fournie, frontmatter, vide)."""
     if path not in long or text.lstrip().startswith("---") or not re.match(r"\s*#{2,3} \S", text) or len(text.split()) < 15:
         return None
-    return text_of(path, overlay).rstrip() + "\n\n" + text.strip() + "\n"
+    return insert_section(text_of(path, overlay), text)
 
 
 def sha(text):
@@ -423,6 +444,11 @@ def selftest():
     assert append_section("web/x.md", sec, set(), {"web/x.md": t}) is None  # page non envoyée en plan
     assert append_section("web/x.md", "---\ntitle: X\n---\n" + sec, {"web/x.md"}, {"web/x.md": t}) is None
     assert outline(t) == "title: XSS\ndescription: d\n## En bref\n## Se protéger"
+    # section ajoutée avant « Voir aussi » / « Sources », jamais après ; pas de section de fin : à la fin
+    page = "---\ntitle: T\n---\n## A\na\n```bash\n## commentaire bash\n```\n## Voir aussi\n- x\n\n## Sources\n- y\n"
+    assert insert_section(page, "## Nouveau\nn") == (
+        "---\ntitle: T\n---\n## A\na\n```bash\n## commentaire bash\n```\n\n## Nouveau\nn\n\n## Voir aussi\n- x\n\n## Sources\n- y\n")
+    assert insert_section("## A\na\n## Pièges\np\n", "## Nouveau\nn") == "## A\na\n## Pièges\np\n\n## Nouveau\nn\n"
     ov = {"web/xss.md": t}
     assert check("web/xss.md", t.replace("## Se protéger", "## Autre"), "web", set(), ov) == "page existante raccourcie ou section supprimée"
     assert check("web/xss.md", t + "ajout\n", "web", set(), ov) is None
