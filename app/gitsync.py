@@ -6,10 +6,13 @@ Après chaque cours : `push` (Wiki.js les récupère à sa synchro suivante). Sa
   python3 gitsync.py setup    # au démarrage (entrypoint.sh) : branche le dépôt, reprend le wiki existant s'il y en a un
 """
 import os, subprocess, sys
+import requests
 import watcher as w
 
 REMOTE = os.environ.get("WIKI_GIT_REMOTE", "")
 BRANCH = os.environ.get("WIKI_GIT_BRANCH", "main")
+WIKIJS_URL = (os.environ.get("WIKIJS_URL") or "http://localhost:3000").rstrip("/")  # variable vide = valeur par défaut
+KEY_FILE = ".wikijs-api-key"  # dans data/ (COURS_ROOT) : créée par wikijs_setup.py ou posée à la main
 
 
 class Erreur(Exception):
@@ -72,6 +75,32 @@ def push():
     return False
 
 
+def wikijs_key():
+    key = os.environ.get("WIKIJS_API_KEY", "").strip()
+    f = w.ROOT / KEY_FILE
+    return key or (f.read_text(encoding="utf-8").strip() if f.exists() else "")
+
+
+def notify_wikijs():
+    """Demande à Wiki.js de relire le dépôt tout de suite (sinon il attend sa synchro suivante, 5 min par défaut).
+    Rend True (fait), False (échec, la synchro normale prendra le relais) ou None (pas de clé API : rien à faire)."""
+    key = wikijs_key()
+    if not key:
+        return None
+    try:
+        r = requests.post(f"{WIKIJS_URL}/graphql", timeout=120, headers={"Authorization": f"Bearer {key}"}, json={
+            "query": 'mutation{storage{executeAction(targetKey:"git",handler:"sync"){responseResult{succeeded message}}}}'})
+        body = r.json()
+        res = (body.get("data") or {}).get("storage", {}).get("executeAction", {}).get("responseResult") or {}
+        if res.get("succeeded"):
+            return True
+        msg = res.get("message") or (body.get("errors") or [{}])[0].get("message") or f"HTTP {r.status_code}"
+    except (requests.RequestException, ValueError, AttributeError) as e:
+        msg = f"{type(e).__name__}: {e}"
+    print(f"gitsync: Wiki.js n'a pas pu être prévenu ({msg[:200]}) : la page arrivera à sa synchro suivante", flush=True)
+    return False
+
+
 def selftest():
     import tempfile
     from pathlib import Path
@@ -110,6 +139,26 @@ def selftest():
             except Erreur:
                 pass
             assert push() is False
+            # Wiki.js prévenu : sans clé rien n'est envoyé ; avec la clé du fichier, la mutation sync est demandée
+            saved_root, saved_post, sent = w.ROOT, requests.post, []
+            w.ROOT = d
+            os.environ.pop("WIKIJS_API_KEY", None)
+            assert notify_wikijs() is None
+            (d / KEY_FILE).write_text("cle-test\n", encoding="utf-8")
+
+            class R:
+                status_code = 200
+                def __init__(self, ok): self.ok = ok
+                def json(self): return {"data": {"storage": {"executeAction": {"responseResult": {"succeeded": self.ok, "message": "non"}}}}}
+            requests.post = lambda url, **kw: sent.append((url, kw["headers"], kw["json"]["query"])) or R(True)
+            assert notify_wikijs() is True and sent[0][1] == {"Authorization": "Bearer cle-test"} and 'handler:"sync"' in sent[0][2]
+            requests.post = lambda url, **kw: R(False)
+            assert notify_wikijs() is False
+            def down(url, **kw):
+                raise requests.ConnectionError("refusé")
+            requests.post = down
+            assert notify_wikijs() is False  # Wiki.js arrêté : jamais d'exception
+            w.ROOT, requests.post = saved_root, saved_post
     finally:
         REMOTE, w.WIKI = saved
     print("selftest OK")

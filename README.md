@@ -37,7 +37,7 @@ docker compose up -d
 ```
 
 - Page de dépôt : http://localhost:8000
-- Wiki.js (si activé) : http://localhost:3000, avec le compte admin du `.env`. Le compte, la synchro avec `data/wiki` et le menu en arborescence sont configurés tout seuls au premier démarrage (`docker compose logs app` affiche `wikijs_setup: …`).
+- Wiki.js (si activé) : http://localhost:3000, avec le compte admin du `.env`. Le compte, la synchro avec `data/wiki`, le menu en arborescence et une clé API (pour que chaque page apparaisse dès son enregistrement, sans attendre la synchro de 5 min) sont configurés tout seuls au premier démarrage (`docker compose logs app` affiche `wikijs_setup: …`).
 - Sans Wiki.js, les pages sont dans `data/wiki/` : à ouvrir avec Obsidian, VS Code ou n'importe quel éditeur Markdown.
 
 Le premier `docker compose up` télécharge Docling (quelques Go) : compter quelques minutes.
@@ -56,9 +56,10 @@ Ton Wiki.js et slide2wiki partagent un **dépôt Git** (GitHub, GitLab, Gitea…
 3. **Dans le `.env` de slide2wiki** : `WIKI_GIT_REMOTE` = l'URL du même dépôt, avec un accès en écriture :
    - HTTPS + jeton : `https://<utilisateur>:<jeton>@github.com/<utilisateur>/<depot>.git` (sur GitHub : jeton *fine-grained* limité à ce dépôt, droit *Contents : Read and write*) ;
    - ou SSH : `git@github.com:<utilisateur>/<depot>.git`, la clé privée dans `ssh/id_ed25519` et la ligne `./ssh:/run/ssh:ro` décommentée dans `docker-compose.yml`.
-4. `docker compose up -d`, puis `docker compose logs app | grep gitsync` : « wiki existant repris » ou « dépôt distant branché ».
+4. Facultatif, pour que les pages apparaissent **tout de suite** (sinon à la synchro suivante de ton Wiki.js) : dans Wiki.js, Administration → **API Access** → activer l'API → **New API Key** (*Full Access*), puis dans `.env` : `WIKIJS_URL` = l'adresse de ton Wiki.js vue depuis slide2wiki (ex. `http://192.168.1.20:3000`) et `WIKIJS_API_KEY` = la clé.
+5. `docker compose up -d`, puis `docker compose logs app | grep gitsync` : « wiki existant repris » ou « dépôt distant branché ».
 
-Au premier démarrage, si le dépôt contient déjà ton wiki, slide2wiki repart de lui (et range ses pages à côté des tiennes, un dossier par matière). Les nouvelles pages apparaissent dans ton Wiki.js à sa synchro suivante (5 min par défaut, ou *Force Sync*).
+Au premier démarrage, si le dépôt contient déjà ton wiki, slide2wiki repart de lui (et range ses pages à côté des tiennes, un dossier par matière). Les nouvelles pages apparaissent dans ton Wiki.js aussitôt avec la clé API de l'étape 4, sinon à sa synchro suivante (5 min par défaut, ou *Force Sync*).
 Dépôt injoignable avant un cours : le PDF reste « en attente », rien n'est perdu. Envoi impossible après un cours : le cours est fini et commité ici, l'envoi est refait au cours suivant.
 
 ## Utilisation

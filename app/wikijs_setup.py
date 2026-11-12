@@ -5,9 +5,10 @@ Lancé en arrière-plan par entrypoint.sh quand COMPOSE_PROFILES contient « wik
 démarrage, il ne fait que réappliquer les mêmes réglages.
 """
 import json, os, sys, time
+from pathlib import Path
 import requests
 
-URL = os.environ.get("WIKIJS_URL", "http://wiki:3000").rstrip("/")
+URL = (os.environ.get("WIKIJS_URL") or "http://wiki:3000").rstrip("/")
 EMAIL, PASSWORD = os.environ.get("WIKI_ADMIN_EMAIL", ""), os.environ.get("WIKI_ADMIN_PASSWORD", "")
 SITE = os.environ.get("WIKI_SITE_URL", "http://localhost:3000")
 
@@ -86,6 +87,20 @@ def main():
     res = gql('mutation{storage{executeAction(targetKey:"git",handler:"importAll"){responseResult{succeeded message}}}}',
               token)["storage"]["executeAction"]["responseResult"]
     log("import des pages :", "ok" if res["succeeded"] else res["message"])
+    # clé API pour que chaque cours ou fiche enregistré soit importé tout de suite (gitsync.notify_wikijs)
+    key_file = Path(os.environ.get("COURS_ROOT", "/data")) / ".wikijs-api-key"
+    if not key_file.exists():
+        try:
+            gql("mutation{authentication{setApiState(enabled:true){responseResult{succeeded message}}}}", token)
+            d = gql('mutation{authentication{createApiKey(name:"slide2wiki",expiration:"3y",fullAccess:true)'
+                    '{key responseResult{succeeded message}}}}', token)["authentication"]["createApiKey"]
+            if not d.get("key"):
+                raise RuntimeError(d["responseResult"]["message"])
+            key_file.write_text(d["key"] + "\n", encoding="utf-8")
+            key_file.chmod(0o600)
+            log("clé API créée : les pages apparaîtront dans Wiki.js dès leur enregistrement")
+        except Exception as e:  # sans clé, Wiki.js importe quand même à sa synchro suivante (5 min)
+            log(f"clé API non créée ({e}) : import à la synchro suivante de Wiki.js")
     try:
         gql("mutation{navigation{updateConfig(mode:TREE){responseResult{succeeded}}}}", token)
         log("menu en arborescence : ok")

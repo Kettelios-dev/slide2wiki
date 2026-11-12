@@ -142,7 +142,13 @@ def _run(d, step):
     subprocess.run(["git", "-C", str(w.WIKI), "add", path], check=True)
     subprocess.run(["git", "-C", str(w.WIKI), "commit", "-q", "-m", f"demande: {label.lower()} « {sujet} »\n\n{report}"], check=True)
     pushed = gitsync.push()
-    return "ok", f"{label} enregistrée : /{path[:-3]}" + ("" if pushed else " (envoi Git en attente)"), page, path
+    seen = None
+    if pushed:
+        step("Wiki.js : import de la page")
+        seen = gitsync.notify_wikijs()
+    when = {True: "visible dans Wiki.js", False: "visible à la prochaine synchro de Wiki.js",
+            None: "visible à la prochaine synchro de Wiki.js (5 min au plus)"}[seen]
+    return "ok", f"{label} enregistrée : /{path[:-3]} · " + (when if pushed else "envoi Git en attente"), page, path
 
 
 def selftest():

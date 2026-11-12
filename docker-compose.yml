@@ -8,6 +8,7 @@ services:
     env_file: .env
     environment:
       UPLOAD_PORT: "8000"  # port dans le conteneur ; UPLOAD_PORT du .env ne règle que le port côté PC
+      WIKIJS_URL: ${WIKIJS_URL:-http://wiki:3000}  # Wiki.js fourni ; ton propre Wiki.js : WIKIJS_URL dans .env
     ports: ["${UPLOAD_BIND:-127.0.0.1}:${UPLOAD_PORT:-8000}:8000"]  # pas de mot de passe : ce PC seulement par défaut
     volumes:
       - ./data:/data

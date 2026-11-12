@@ -396,6 +396,9 @@ def process(pdf, step=lambda s: None, matiere=None):
     subprocess.run(["git", "-C", str(w.WIKI), "commit", "-q", "--allow-empty", "-m", msg + "\n\n" + "\n".join(rapport)], check=True)
     state_path.unlink()
     pushed = gitsync.push()  # échec : le commit est gardé et renvoyé au prochain cours, le cours est quand même fini
+    if pushed:
+        step("Wiki.js : import des nouvelles pages")
+        gitsync.notify_wikijs()  # sans clé API Wiki.js : il les verra à sa synchro suivante
     print(f"OK {msg}", flush=True)
     return len(overlay), (f"{created} créées, {len(overlay) - created} complétées" + (f", {len(broken)} liens cassés" if broken else "")
                           + ("" if pushed else ", envoi vers le dépôt Git en attente"))
