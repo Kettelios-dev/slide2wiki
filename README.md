@@ -9,8 +9,11 @@ navigateur ──PDF──▶ page de dépôt :8000 ─▶ Docling (texte du PDF
                                         ─▶ plan du cours lu dans le PDF (chapitres, diapos)
                                         ─▶ Claude, partie par partie (pages proches du wiki fournies)
                                         ─▶ contrôles ─▶ data/wiki/<matière>/<thème>/<page>.md ─ commit Git
-                                                           └──▶ Wiki.js :3000 (facultatif)
+                                                           ├──▶ ton propre Wiki.js, via son dépôt Git (facultatif)
+                                                           └──▶ ou le Wiki.js fourni :3000 (facultatif)
 ```
+
+Trois façons de lire le résultat : **ton Wiki.js existant** (branché par son dépôt Git), le **Wiki.js fourni** avec slide2wiki, ou simplement les **fichiers Markdown** de `data/wiki/` (Obsidian, VS Code…).
 
 ## Ce qu'il faut
 
@@ -39,6 +42,24 @@ docker compose up -d
 
 Le premier `docker compose up` télécharge Docling (quelques Go) : compter quelques minutes.
 Port 8000 ou 3000 déjà pris par un autre programme : changer `UPLOAD_PORT` / `WIKI_PORT` dans `.env` (et `WIKI_SITE_URL` avec).
+
+## Brancher ton propre Wiki.js
+
+Ton Wiki.js et slide2wiki partagent un **dépôt Git** (GitHub, GitLab, Gitea…) : ton Wiki.js le synchronise dans les deux sens, slide2wiki le récupère avant chaque cours (il voit donc les pages que tu as modifiées) et y envoie ses pages à la fin. Ton Wiki.js n'a pas besoin d'être sur la même machine.
+
+1. **Un dépôt Git** pour ton wiki : un nouveau dépôt vide (privé, de préférence), ou celui que ton Wiki.js utilise déjà.
+2. **Dans ton Wiki.js** : Administration → **Stockage** → **Git** :
+   - activer, renseigner l'URL du dépôt et ses identifiants (*Authentication Type* « basic » avec un jeton, ou « ssh » avec une clé) ;
+   - **Sync Direction : Bi-directional** (tes éditions vont dans le dépôt, les pages de slide2wiki en reviennent) ;
+   - **Apply**, puis dans *Actions* : **Add Untracked Changes** (si ton wiki a déjà des pages), puis **Force Sync**.
+   - Garder **Administration → Locales → Namespacing** désactivé : sinon Wiki.js range les pages dans un dossier par langue et ne lit pas celles de slide2wiki.
+3. **Dans le `.env` de slide2wiki** : `WIKI_GIT_REMOTE` = l'URL du même dépôt, avec un accès en écriture :
+   - HTTPS + jeton : `https://<utilisateur>:<jeton>@github.com/<utilisateur>/<depot>.git` (sur GitHub : jeton *fine-grained* limité à ce dépôt, droit *Contents : Read and write*) ;
+   - ou SSH : `git@github.com:<utilisateur>/<depot>.git`, la clé privée dans `ssh/id_ed25519` et la ligne `./ssh:/run/ssh:ro` décommentée dans `docker-compose.yml`.
+4. `docker compose up -d`, puis `docker compose logs app | grep gitsync` : « wiki existant repris » ou « dépôt distant branché ».
+
+Au premier démarrage, si le dépôt contient déjà ton wiki, slide2wiki repart de lui (et range ses pages à côté des tiennes, un dossier par matière). Les nouvelles pages apparaissent dans ton Wiki.js à sa synchro suivante (5 min par défaut, ou *Force Sync*).
+Dépôt injoignable avant un cours : le PDF reste « en attente », rien n'est perdu. Envoi impossible après un cours : le cours est fini et commité ici, l'envoi est refait au cours suivant.
 
 ## Utilisation
 
@@ -81,9 +102,10 @@ Sauvegarder `data/` suffit.
 ## Dépannage
 
 - `docker compose logs -f app` : tout le traitement s'y affiche.
+- « récupération du dépôt distant impossible » : URL, jeton (expiré ?) ou droits d'écriture de `WIKI_GIT_REMOTE` ; le jeton n'apparaît jamais dans les messages.
 - « jeton Claude absent » : `.env` non rempli, ou modifié sans relancer `docker compose up -d`.
 - « Docling injoignable » : le conteneur `docling` démarre encore (premier lancement) ; attendre puis **Relancer**.
-- Auto-tests : `docker compose run --rm --entrypoint sh app -c "python3 integrer.py --selftest && python3 watcher.py --selftest && python3 structure.py --selftest && python3 upload.py --selftest"`.
+- Auto-tests : `docker compose run --rm --entrypoint sh app -c "python3 integrer.py --selftest && python3 watcher.py --selftest && python3 structure.py --selftest && python3 upload.py --selftest && python3 gitsync.py --selftest"`.
 
 ## Licence
 

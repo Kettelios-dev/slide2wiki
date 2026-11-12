@@ -13,6 +13,7 @@ Reprise : les parties déjà faites sont gardées dans md/<cours>-<empreinte>.cl
 """
 import collections, csv, datetime, hashlib, json, math, os, re, subprocess, sys, time
 from pathlib import Path
+import gitsync
 import watcher as w
 
 RULES = Path(os.environ.get("COURS_RULES", Path(__file__).with_name("regles.md")))  # monté depuis ./regles.md
@@ -321,8 +322,18 @@ def ask_parsed(system, user, step, cours, k, dump_dir):
 
 # ---------- un cours ----------
 
+def sync(step, what):
+    """Récupère le dépôt distant (pages éditées dans le Wiki.js de l'utilisateur) ; injoignable : on attend."""
+    try:
+        step(f"synchro Git : {what}")
+        gitsync.pull()
+    except gitsync.Erreur as e:
+        raise Attente(gitsync.hide(str(e)))
+
+
 def process(pdf, step=lambda s: None, matiere=None):
     matiere = matiere or (pdf.parent.name if pdf.parent != w.INBOX else None)
+    sync(step, "récupération du wiki avant le cours")
     md_path = w.cache_path(pdf)
     if not md_path.exists():
         md_path.write_text(w.docling_to_md(pdf, step), encoding="utf-8")
@@ -364,6 +375,7 @@ def process(pdf, step=lambda s: None, matiere=None):
         state["rapport"] += [l for l in report.splitlines() if l.strip()]
         state["faites"].append(f"{unit[1]}-{unit[2]}")
         state_path.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")  # reprise sans rien repayer
+    sync(step, "dernières éditions avant écriture")  # échec : tout est gardé dans l'état, la relance ne repaie rien
     # une page modifiée dans Wiki.js (ou à la main) pendant l'intégration n'est pas écrasée : version de Claude à revoir
     for p in [p for p in overlay if p in seen and (w.WIKI / p).exists()
               and sha((w.WIKI / p).read_text(encoding="utf-8")) != seen[p]]:
@@ -381,8 +393,10 @@ def process(pdf, step=lambda s: None, matiere=None):
     subprocess.run(["git", "-C", str(w.WIKI), "add", "-A"], check=True)
     subprocess.run(["git", "-C", str(w.WIKI), "commit", "-q", "--allow-empty", "-m", msg + "\n\n" + "\n".join(rapport)], check=True)
     state_path.unlink()
+    pushed = gitsync.push()  # échec : le commit est gardé et renvoyé au prochain cours, le cours est quand même fini
     print(f"OK {msg}", flush=True)
-    return len(overlay), f"{created} créées, {len(overlay) - created} complétées" + (f", {len(broken)} liens cassés" if broken else "")
+    return len(overlay), (f"{created} créées, {len(overlay) - created} complétées" + (f", {len(broken)} liens cassés" if broken else "")
+                          + ("" if pushed else ", envoi vers le dépôt Git en attente"))
 
 
 def selftest():
@@ -444,8 +458,9 @@ def selftest_process(t):
     page modifiée pendant l'intégration jamais écrasée."""
     import tempfile
     global ask, log_usage, REVIEW, USAGE, RULES
-    saved = ask, log_usage, REVIEW, USAGE, RULES, w.ROOT, w.INBOX, w.MD, w.WIKI, w.read_plan
-    git = lambda *a: subprocess.run(["git", "-C", str(w.WIKI), *a], check=True, capture_output=True, encoding="utf-8").stdout
+    saved = ask, log_usage, REVIEW, USAGE, RULES, w.ROOT, w.INBOX, w.MD, w.WIKI, w.read_plan, gitsync.REMOTE
+    run = lambda d, *a: subprocess.run(["git", "-C", str(d), *a], check=True, capture_output=True, encoding="utf-8").stdout
+    git = lambda *a: run(w.WIKI, *a)
     try:
         with tempfile.TemporaryDirectory() as d:
             w.ROOT = Path(d); w.INBOX, w.MD, w.WIKI = w.ROOT / "inbox", w.ROOT / "md", w.ROOT / "wiki"
@@ -455,6 +470,13 @@ def selftest_process(t):
                 p.mkdir(parents=True)
             git("init", "-q", "-b", "main"); git("config", "user.email", "t@t"); git("config", "user.name", "t")
             (w.WIKI / "web" / "xss.md").write_text(t, encoding="utf-8"); git("add", "-A"); git("commit", "-q", "-m", "init")
+            # dépôt distant partagé avec « le Wiki.js de l'utilisateur » (un simple clone ici)
+            remote, wikijs = w.ROOT / "remote.git", w.ROOT / "wikijs"
+            subprocess.run(["git", "init", "-q", "--bare", "-b", "main", str(remote)], check=True)
+            gitsync.REMOTE = str(remote)
+            assert "branché" in gitsync.setup()
+            subprocess.run(["git", "clone", "-q", str(remote), str(wikijs)], check=True, capture_output=True)
+            run(wikijs, "config", "user.email", "wikijs@t"); run(wikijs, "config", "user.name", "Wiki.js")
             pdf = w.INBOX / "web" / "c.pdf"; pdf.write_bytes(b"%PDF-1 cours")
             # deux chapitres de 13 000 caractères : deux appels à Claude
             w.cache_path(pdf).write_text(f"faille xss {'a' * 13000}\n{w.PAGE_MARK}\nfaille csrf {'b' * 13000}", encoding="utf-8")
@@ -484,21 +506,27 @@ def selftest_process(t):
             assert (w.WIKI / "web" / "csrf.md").exists() and (w.WIKI / "web" / "xss.md").read_text(encoding="utf-8") == t
             assert (REVIEW / "c" / "web" / "xss.md").exists() and not w.cache_path(pdf).with_suffix(".claude.json").exists()
             assert git("log", "-1", "--format=%s").startswith("cours: c.pdf (1 créées, 0 complétées)")
-            # édition concurrente : xss.md change pendant l'intégration, la version de Claude va dans a-revoir/
+            run(wikijs, "pull", "-q", "origin", "main")  # le cours est arrivé sur le dépôt distant
+            assert (wikijs / "web" / "csrf.md").exists()
+            # édition concurrente : xss.md est modifiée dans « Wiki.js » (poussée sur le dépôt distant) pendant que
+            # Claude travaille ; elle est récupérée avant l'écriture et gardée, la version de Claude va dans a-revoir/
             pdf2 = w.INBOX / "web" / "d.pdf"; pdf2.write_bytes(b"%PDF-1 autre")
             w.cache_path(pdf2).write_text("faille xss " + "c" * 300, encoding="utf-8")
             w.read_plan = lambda pdf: {"chapitres": []}
             edited = t + "\nmodifié dans Wiki.js\n"
 
             def fake2(*a):
-                (w.WIKI / "web" / "xss.md").write_text(edited, encoding="utf-8")
+                (wikijs / "web" / "xss.md").write_text(edited, encoding="utf-8")
+                run(wikijs, "commit", "-qam", "docs: update web/xss"); run(wikijs, "push", "-q", "origin", "HEAD:main")
                 return {"result": f"<<<FICHIER web/xss.md>>>\n{t}ajout\n<<<FIN>>>\n<<<RAPPORT>>>\nx\n<<<FIN>>>", "duree": 0}
             ask = fake2
             process(pdf2)
             assert (w.WIKI / "web" / "xss.md").read_text(encoding="utf-8") == edited
             assert (REVIEW / "d" / "web" / "xss.md").exists()
+            run(wikijs, "pull", "-q", "origin", "main")
+            assert (wikijs / "web" / "xss.md").read_text(encoding="utf-8") == edited  # rien d'écrasé côté Wiki.js non plus
     finally:
-        ask, log_usage, REVIEW, USAGE, RULES, w.ROOT, w.INBOX, w.MD, w.WIKI, w.read_plan = saved
+        ask, log_usage, REVIEW, USAGE, RULES, w.ROOT, w.INBOX, w.MD, w.WIKI, w.read_plan, gitsync.REMOTE = saved
 
 
 if __name__ == "__main__":

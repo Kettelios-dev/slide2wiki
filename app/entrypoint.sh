@@ -10,6 +10,12 @@ if [ ! -d "$COURS_ROOT/wiki/.git" ]; then
 fi
 # Wiki.js pousse ses modifications dans ce dépôt non-bare : met à jour les fichiers au lieu de refuser
 git -C "$COURS_ROOT/wiki" config receive.denyCurrentBranch updateInstead
+# clé SSH montée depuis l'hôte (droits trop ouverts sous Windows : ssh la refuserait) -> copie privée en 600
+if ls /run/ssh/id_* >/dev/null 2>&1; then
+  mkdir -p "$HOME/.ssh" && cp /run/ssh/id_* "$HOME/.ssh/" && chmod 700 "$HOME/.ssh" && chmod 600 "$HOME"/.ssh/id_*
+fi
+# dépôt Git de ton propre Wiki.js (WIKI_GIT_REMOTE) : branché ici, wiki existant repris au premier démarrage
+python3 /app/gitsync.py setup
 case "$COMPOSE_PROFILES" in
   *wikijs*) python3 /app/wikijs_setup.py & ;;
 esac

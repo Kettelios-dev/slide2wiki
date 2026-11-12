@@ -12,6 +12,8 @@ services:
     volumes:
       - ./data:/data
       - ./regles.md:/app/regles.md:ro  # règles du wiki, modifiables sans reconstruire l'image
+      # dépôt de ton Wiki.js en SSH (git@…) : décommenter et mettre la clé privée dans ./ssh/id_ed25519
+      #- ./ssh:/run/ssh:ro
     depends_on: [docling]
 
   docling:

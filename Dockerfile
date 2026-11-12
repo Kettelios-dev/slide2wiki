@@ -1,5 +1,5 @@
 FROM python:3.12-slim
-RUN apt-get update && apt-get install -y --no-install-recommends git curl ca-certificates \
+RUN apt-get update && apt-get install -y --no-install-recommends git openssh-client curl ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 RUN pip install --no-cache-dir pypdf==6.21.4 pymupdf==2.1 requests==2.34.2
 # Claude Code (binaire natif) sorti du HOME de root : le conteneur peut tourner sous n'importe quel uid (PUID)
@@ -9,6 +9,8 @@ RUN curl -fsSL https://claude.ai/install.sh | bash \
 # dépôt du wiki monté depuis l'hôte, d'un autre propriétaire que l'uid du conteneur
 RUN git config --system --add safe.directory '*'
 ENV HOME=/tmp COURS_ROOT=/data DOCLING_URL=http://docling:5001 DISABLE_AUTOUPDATER=1 PYTHONUNBUFFERED=1
+# dépôt distant en SSH : clé copiée de /run/ssh par entrypoint.sh, empreinte du serveur gardée dans data/
+ENV GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/data/.known_hosts"
 COPY app/ /app/
 COPY regles.md /app/regles.md
 RUN sed -i 's/\r$//' /app/entrypoint.sh && chmod +x /app/entrypoint.sh  # clone sous Windows : fins de ligne CRLF
