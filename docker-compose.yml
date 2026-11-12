@@ -1,0 +1,55 @@
+# docker compose up -d                 page de dépôt (http://localhost:8000) + Docling ; pages dans data/wiki/
+# COMPOSE_PROFILES=wikijs dans .env    ajoute Wiki.js (http://localhost:3000), configuré automatiquement
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    user: "${PUID:-1000}:${PGID:-1000}"
+    env_file: .env
+    environment:
+      UPLOAD_PORT: "8000"  # port dans le conteneur ; UPLOAD_PORT du .env ne règle que le port côté PC
+    ports: ["${UPLOAD_BIND:-127.0.0.1}:${UPLOAD_PORT:-8000}:8000"]  # pas de mot de passe : ce PC seulement par défaut
+    volumes:
+      - ./data:/data
+      - ./regles.md:/app/regles.md:ro  # règles du wiki, modifiables sans reconstruire l'image
+    depends_on: [docling]
+
+  docling:
+    image: quay.io/docling-project/docling-serve-cpu:v1.38.2
+    restart: unless-stopped
+    environment:
+      DOCLING_SERVE_MAX_SYNC_WAIT: "1800"  # gros PDF sur CPU : 30 min max
+
+  db:
+    profiles: [wikijs]
+    image: postgres:15-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: wiki
+      POSTGRES_USER: wikijs
+      POSTGRES_PASSWORD: ${DB_PASS:-wikijs-local}  # base jamais exposée hors de Docker
+    volumes: [db-data:/var/lib/postgresql/data]
+
+  wiki:
+    profiles: [wikijs]
+    image: ghcr.io/requarks/wiki:2.5
+    restart: unless-stopped
+    depends_on: [db]
+    user: root
+    ports: ["${WIKI_BIND:-127.0.0.1}:${WIKI_PORT:-3000}:3000"]
+    environment:
+      DB_TYPE: postgres
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_USER: wikijs
+      DB_PASS: ${DB_PASS:-wikijs-local}
+      DB_NAME: wiki
+      # le dépôt data/wiki appartient à l'utilisateur de l'hôte, pas à root : git refuserait de le lire
+      GIT_CONFIG_COUNT: "1"
+      GIT_CONFIG_KEY_0: safe.directory
+      GIT_CONFIG_VALUE_0: "*"
+    volumes:
+      - ./data/wiki:/cours/wiki:ro  # Wiki.js ne fait que lire le dépôt (« Pull from target ») ; /wiki est son propre code
+
+volumes:
+  db-data:

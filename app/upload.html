@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dépôt de cours</title>
+<style>
+  :root {
+    --bg: #f6f5f2; --card: #ffffff; --ink: #1d1d1b; --muted: #6b6a66; --line: #e2e0da;
+    --accent: #2f5bd3; --accent-soft: #e8eefc; --ok: #1f7a4d; --warn: #a2620b; --err: #b3261e;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #151515; --card: #1f1f1f; --ink: #ecebe8; --muted: #9a9893; --line: #333230;
+      --accent: #7c9cf5; --accent-soft: #232b40; --ok: #5cc28d; --warn: #e0a64a; --err: #f08a82;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 760px; margin: 0 auto; padding: 32px 16px 64px; }
+  header { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+  h1 { font-size: 22px; margin: 0; }
+  header a { color: var(--accent); text-decoration: none; font-size: 14px; }
+  p.sub { color: var(--muted); margin: 4px 0 24px; }
+  label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 6px; }
+  input[type=text] { width: 100%; padding: 10px 12px; font: inherit; color: var(--ink);
+         background: var(--card); border: 1px solid var(--line); border-radius: 8px; }
+  input[type=text]:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  .hint { font-size: 13px; color: var(--muted); margin: 6px 0 20px; }
+  #zone { border: 2px dashed var(--line); border-radius: 12px; background: var(--card);
+          padding: 48px 16px; text-align: center; cursor: pointer; transition: .15s; }
+  #zone.over { border-color: var(--accent); background: var(--accent-soft); }
+  #zone strong { display: block; font-size: 17px; margin-bottom: 4px; }
+  #zone span { color: var(--muted); font-size: 14px; }
+  h2 { font-size: 15px; margin: 32px 0 10px; display: flex; justify-content: space-between; align-items: center; }
+  button { font: inherit; font-size: 13px; color: var(--accent); background: none;
+           border: 1px solid var(--line); border-radius: 6px; padding: 4px 10px; cursor: pointer; }
+  button:hover { background: var(--accent-soft); }
+  ul { list-style: none; margin: 0; padding: 0; background: var(--card);
+       border: 1px solid var(--line); border-radius: 10px; }
+  li { padding: 10px 14px; border-top: 1px solid var(--line); display: grid;
+       grid-template-columns: 1fr auto; gap: 2px 12px; }
+  li:first-child { border-top: 0; }
+  li .nom { font-weight: 500; overflow-wrap: anywhere; }
+  li .meta { grid-column: 1 / -1; font-size: 13px; color: var(--muted); overflow-wrap: anywhere; }
+  .etat { font-size: 12px; font-weight: 600; padding: 1px 8px; border-radius: 99px; align-self: start;
+          background: var(--accent-soft); color: var(--accent); white-space: nowrap; }
+  .etat.ok { color: var(--ok); } .etat.attente, .etat.interrompu { color: var(--warn); } .etat.erreur { color: var(--err); }
+  h2 .compte { font-weight: 400; color: var(--muted); font-size: 13px; }
+  progress { grid-column: 1 / -1; width: 100%; height: 6px; accent-color: var(--accent); }
+  .vide { padding: 14px; color: var(--muted); font-size: 14px; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Dépôt de cours</h1>
+    <a id="wiki" href="#">Ouvrir le wiki →</a>
+  </header>
+  <p class="sub">PDF → Docling → rédaction par Claude → wiki</p>
+
+  <label for="matiere">Matière</label>
+  <input type="text" id="matiere" list="matieres" placeholder="ex. Réseaux" autocomplete="off">
+  <datalist id="matieres"></datalist>
+  <div class="hint">Laisse vide pour que le modèle devine la matière.</div>
+
+  <div id="zone" tabindex="0">
+    <strong>Glisse tes PDF ici</strong>
+    <span>ou clique pour les choisir</span>
+  </div>
+  <input type="file" id="fichiers" accept="application/pdf,.pdf" multiple hidden>
+
+  <ul id="envois" hidden></ul>
+
+  <h2>Traitements <button id="relancer" title="Retraite les PDF restés en attente dans inbox/">Relancer les PDF en attente</button></h2>
+  <ul id="jobs"><li class="vide">Aucun dépôt pour l'instant.</li></ul>
+
+  <h2>Historique <span class="compte" id="compte"></span></h2>
+  <ul id="historique"><li class="vide">Aucun PDF déposé pour l'instant.</li></ul>
+</main>
+<script>
+const $ = s => document.querySelector(s);
+const zone = $("#zone"), input = $("#fichiers"), envois = $("#envois");
+$("#wiki").href = `${location.protocol}//${location.hostname}:3000/`;
+try { $("#matiere").value = localStorage.getItem("matiere") || ""; } catch {}
+
+const el = (tag, cls, txt) => { const e = document.createElement(tag); if (cls) e.className = cls; if (txt != null) e.textContent = txt; return e; };
+
+function envoyer(file) {
+  const matiere = $("#matiere").value.trim();
+  try { localStorage.setItem("matiere", matiere); } catch {}
+  const li = el("li"), etat = el("span", "etat", "envoi"), bar = el("progress");
+  bar.max = 1; bar.value = 0;
+  li.append(el("span", "nom", file.name), etat, bar);
+  envois.hidden = false; envois.prepend(li);
+
+  const x = new XMLHttpRequest();
+  x.open("POST", `/api/upload?matiere=${encodeURIComponent(matiere)}&nom=${encodeURIComponent(file.name)}`);
+  x.upload.onprogress = e => { if (e.lengthComputable) bar.value = e.loaded / e.total; };
+  x.onload = () => {
+    let r = {}; try { r = JSON.parse(x.responseText); } catch {}
+    if (x.status === 200) { li.remove(); if (!envois.children.length) envois.hidden = true; rafraichir(); }
+    else { bar.remove(); etat.className = "etat erreur"; etat.textContent = "refusé"; li.append(el("span", "meta", r.erreur || `HTTP ${x.status}`)); }
+  };
+  x.onerror = () => { bar.remove(); etat.className = "etat erreur"; etat.textContent = "échec"; li.append(el("span", "meta", "serveur injoignable")); };
+  x.send(file);
+}
+
+function deposer(files) {
+  [...files].filter(f => /\.pdf$/i.test(f.name)).forEach(envoyer);
+}
+
+zone.onclick = () => input.click();
+zone.onkeydown = e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); input.click(); } };
+input.onchange = () => { deposer(input.files); input.value = ""; };
+["dragenter", "dragover"].forEach(t => zone.addEventListener(t, e => { e.preventDefault(); zone.classList.add("over"); }));
+["dragleave", "drop"].forEach(t => zone.addEventListener(t, e => { e.preventDefault(); zone.classList.remove("over"); }));
+// le dépôt est géré au niveau de la page : un PDF lâché à côté de la zone ne l'ouvre pas à la place
+window.addEventListener("dragover", e => e.preventDefault());
+window.addEventListener("drop", e => { e.preventDefault(); deposer(e.dataTransfer.files); });
+
+const heure = t => new Date(t * 1000).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
+
+async function rafraichir() {
+  try {
+    const jobs = await (await fetch("/api/status")).json();
+    const ul = $("#jobs"); ul.replaceChildren();
+    if (!jobs.length) ul.append(el("li", "vide", "Aucun dépôt pour l'instant."));
+    for (const j of jobs) {
+      const li = el("li");
+      li.append(el("span", "nom", j.nom), el("span", "etat " + j.etat, j.etat),
+                el("span", "meta", [j.matiere || "matière devinée", j.detail, heure(j.t)].filter(Boolean).join(" · ")));
+      ul.append(li);
+    }
+  } catch {}
+  historique();
+}
+
+const date = t => new Date(t * 1000).toLocaleString("fr-FR", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" });
+const duree = s => s < 90 ? `${Math.round(s)} s` : s < 5400 ? `${Math.round(s / 60)} min` : `${(s / 3600).toFixed(1)} h`;
+
+async function historique() {
+  try {
+    const rows = await (await fetch("/api/historique")).json();
+    const ul = $("#historique"); ul.replaceChildren();
+    $("#compte").textContent = rows.length ? `${rows.length} PDF` : "";
+    if (!rows.length) ul.append(el("li", "vide", "Aucun PDF déposé pour l'instant."));
+    for (const r of rows) {
+      const li = el("li");
+      li.append(el("span", "nom", r.nom), el("span", "etat " + r.etat, r.etat),
+                el("span", "meta", [r.matiere || "matière devinée", `déposé le ${date(r.depot)}`,
+                                    r.fin && r.fin > r.depot && `terminé en ${duree(r.fin - r.depot)}`, r.detail].filter(Boolean).join(" · ")));
+      ul.append(li);
+    }
+  } catch {}
+}
+
+async function matieres() {
+  try {
+    const l = await (await fetch("/api/matieres")).json();
+    $("#matieres").replaceChildren(...l.map(m => Object.assign(document.createElement("option"), { value: m })));
+  } catch {}
+}
+
+$("#relancer").onclick = async () => {
+  const r = await (await fetch("/api/relancer", { method: "POST" })).json();
+  $("#relancer").textContent = r.relances ? `${r.relances} relancé(s)` : "Rien en attente";
+  setTimeout(() => $("#relancer").textContent = "Relancer les PDF en attente", 2500);
+  rafraichir();
+};
+
+matieres(); rafraichir();
+setInterval(rafraichir, 3000);
+</script>
+</body>
+</html>

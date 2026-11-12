@@ -1,0 +1,89 @@
+# slide2wiki
+
+Glisse tes cours en PDF sur une page web : Claude les transforme en **wiki de révision rangé par sujet**
+(pas par cours), avec des pages synthétiques, des liens entre notions et un rapport des passages douteux.
+Chaque nouveau cours complète les pages existantes au lieu d'en créer des doublons.
+
+```
+navigateur ──PDF──▶ page de dépôt :8000 ─▶ Docling (texte du PDF, OCR si besoin)
+                                        ─▶ plan du cours lu dans le PDF (chapitres, diapos)
+                                        ─▶ Claude, partie par partie (pages proches du wiki fournies)
+                                        ─▶ contrôles ─▶ data/wiki/<matière>/<thème>/<page>.md ─ commit Git
+                                                           └──▶ Wiki.js :3000 (facultatif)
+```
+
+## Ce qu'il faut
+
+- **Docker** (Docker Desktop sur Windows/Mac, Docker Engine + plugin compose sur Linux). 4 Go de RAM libres conseillés (Docling).
+- **Un abonnement Claude** (Pro ou Max) ou une **clé API** Anthropic. Chacun utilise le sien.
+
+## Installation
+
+```bash
+git clone https://github.com/Kettelios-dev/slide2wiki.git && cd slide2wiki
+cp .env.example .env
+docker compose build
+docker compose run --rm --entrypoint claude app setup-token   # ouvre un lien : se connecter à Claude, coller le code
+```
+
+Copier le jeton affiché (`sk-ant-oat01-…`) dans `.env`, ligne `CLAUDE_CODE_OAUTH_TOKEN=` (ou remplir `ANTHROPIC_API_KEY=` à la place).
+Pour Wiki.js, enlever le `#` devant `COMPOSE_PROFILES=wikijs` et choisir `WIKI_ADMIN_EMAIL` / `WIKI_ADMIN_PASSWORD`.
+
+```bash
+docker compose up -d
+```
+
+- Page de dépôt : http://localhost:8000
+- Wiki.js (si activé) : http://localhost:3000, avec le compte admin du `.env`. Le compte, la synchro avec `data/wiki` et le menu en arborescence sont configurés tout seuls au premier démarrage (`docker compose logs app` affiche `wikijs_setup: …`).
+- Sans Wiki.js, les pages sont dans `data/wiki/` : à ouvrir avec Obsidian, VS Code ou n'importe quel éditeur Markdown.
+
+Le premier `docker compose up` télécharge Docling (quelques Go) : compter quelques minutes.
+Port 8000 ou 3000 déjà pris par un autre programme : changer `UPLOAD_PORT` / `WIKI_PORT` dans `.env` (et `WIKI_SITE_URL` avec).
+
+## Utilisation
+
+1. Choisir la **matière** (le nom du dossier dans le wiki, ex. « Réseaux ») et glisser un ou plusieurs PDF. Matière vide : Claude choisit le dossier.
+2. La page affiche l'avancement : conversion Docling (environ 1 min pour 10 diapos sur CPU), puis « Claude : partie n/N ».
+3. À la fin : pages créées et complétées. Le détail est dans `data/rapports/<cours>.txt`, avec les **doutes signalés par Claude** (erreur dans le cours, passage illisible, contradiction) : à relire.
+
+Mettre tous les cours d'une matière dans la même matière : c'est ce qui permet de compléter les pages au lieu de les dupliquer.
+
+### Adapter à ses cours
+
+`regles.md` contient les consignes données à Claude (organisation, style des pages, exactitude). Remplir au moins la section **Contexte** (formation, remarques). Le fichier est relu à chaque cours : pas besoin de reconstruire l'image.
+
+### Consommation
+
+Claude ne reçoit jamais tout le wiki : seulement une partie du cours (≈ 24 000 caractères max), les règles, et les 5 pages existantes les plus proches. **Le coût par appel ne grandit pas avec le wiki** (≈ 15 000 tokens d'entrée au maximum). Mesures : un cours de 23 diapos = 1 appel (≈ 5k tokens en entrée, 4,5k en sortie) ; 82 diapos = 2 appels. Chaque appel est noté dans `data/claude-usage.csv`.
+Quota de l'abonnement atteint : le PDF reste « en attente », les parties déjà faites sont gardées, et le bouton **Relancer** reprend là où ça s'était arrêté.
+
+## Données (`data/`)
+
+| Dossier | Contenu |
+|---|---|
+| `wiki/` | les pages (dépôt Git : un commit par cours, `git revert` pour annuler un cours) |
+| `inbox/` | PDF déposés ; `_traites/` une fois faits, `_erreurs/` en cas d'échec |
+| `md/` | texte extrait par Docling (cache : un PDF n'est converti qu'une fois) |
+| `rapports/` | rapport de chaque cours |
+| `a-revoir/` | pages refusées par les contrôles (page existante raccourcie, chemin invalide…) : rien n'est écrasé |
+
+Sauvegarder `data/` suffit.
+
+## Bon à savoir
+
+- **Pas de mot de passe sur la page de dépôt** : par défaut elle n'écoute que sur ce PC (`UPLOAD_BIND=127.0.0.1`). Pour l'ouvrir au réseau local, mettre `0.0.0.0`, en sachant que tout le monde sur le réseau pourra consommer ton quota.
+- **Wiki.js est en lecture seule** sur `data/wiki` (« Pull from target ») : une page modifiée dans l'éditeur de Wiki.js est écrasée à la synchro suivante (5 min). Corriger le fichier dans `data/wiki/` (et faire un commit) à la place.
+- **PDF scannés** : Docling fait l'OCR, mais le texte peut être moins bon et le plan du cours n'est pas détecté (Claude découpe alors par blocs).
+- **Retraiter un cours** : supprimer ses pages (`git rm` + commit dans `data/wiki`) et le PDF de `data/inbox/_traites/`, puis le redéposer.
+- **Linux** : si `data/` appartient à un autre utilisateur que 1000, mettre son uid/gid (`id`) dans `PUID` / `PGID`.
+
+## Dépannage
+
+- `docker compose logs -f app` : tout le traitement s'y affiche.
+- « jeton Claude absent » : `.env` non rempli, ou modifié sans relancer `docker compose up -d`.
+- « Docling injoignable » : le conteneur `docling` démarre encore (premier lancement) ; attendre puis **Relancer**.
+- Auto-tests : `docker compose run --rm --entrypoint sh app -c "python3 integrer.py --selftest && python3 watcher.py --selftest && python3 structure.py --selftest && python3 upload.py --selftest"`.
+
+## Licence
+
+MIT. Docling, Wiki.js et Claude Code ont leurs propres licences et conditions d'utilisation.
