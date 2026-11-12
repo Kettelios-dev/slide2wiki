@@ -50,13 +50,31 @@ une ligne : ce qui a été fait ; puis les limites (notions absentes des pages, 
 Rien d'autre dans la réponse."""
 
 
+WHOLE = re.compile(r"\b(tou[ts] (le|les) (cours|chapitres?)|toute la mati[eè]re|l'ensemble (du|des|de la) (cours|chapitres|mati[eè]re)"
+                   r"|(cours|mati[eè]re) (complet|compl[eè]te|enti[eè]re?)|r[ée]vision g[ée]n[ée]rale)\b", re.I)
+
+
 def sources(matiere, sujet):
-    """Pages les plus proches du sujet (hors pages déjà produites par des demandes), dans la limite de SOURCES_CHARS."""
+    """Pages les plus proches du sujet (hors pages déjà produites par des demandes), dans la limite de SOURCES_CHARS.
+    « Tout le cours », le nom de la matière, ou un sujet introuvable mot pour mot : toutes les pages de la matière,
+    chacune résumée à sa part du budget (la recherche par mots ne connaît pas les synonymes)."""
     root = w.slug(matiere) if matiere else ""
     scope = [p for p in g.pages({}) if (not root or p.startswith(root + "/"))
              and not set(p.split("/")[1:-1]) & OUTPUTS]
+    ranked = g.rank(sujet, scope, {})
+    if root and scope and (not ranked or WHOLE.search(sujet) or w.slug(sujet.split()[0] if sujet.split() else "") == root):
+        share = max(400, SOURCES_CHARS // len(scope))
+        out, size = [], 0
+        for p in sorted(scope):
+            meta, body = g.front(g.text_of(p, {}))
+            t = f"# {meta.get('title', p)}\n{body.strip()}"  # sans frontmatter : le budget va au contenu
+            t = t if len(t) <= share else t[:share] + "\n[… page tronquée : la suite existe dans le wiki]"
+            if size + len(t) > SOURCES_CHARS:
+                break
+            out.append((p, t)); size += len(t)
+        return out
     out, size = [], 0
-    for p in g.rank(sujet, scope, {}):
+    for p in ranked:
         t = g.text_of(p, {})
         if size + len(t) > SOURCES_CHARS:
             if out:
@@ -159,7 +177,12 @@ def selftest():
             assert git("log", "-1", "--format=%s").startswith("demande: fiche de révision")
             etat, detail, page, path = run({"type": "question", "matiere": "Réseaux", "sujet": "osi", "enregistrer": False})
             assert etat == "ok" and path is None and "non enregistrée" in detail
-            assert run({"type": "fiche", "matiere": "Réseaux", "sujet": "photosynthèse"})[0] == "erreur"  # rien dans le wiki
+            # toute la matière : « tout le cours », le nom de la matière, ou un sujet absent mot pour mot (synonymes)
+            for sujet in ("tout le cours", "Réseaux", "photosynthèse"):
+                assert [p for p, _ in sources("Réseaux", sujet)] == ["reseaux/osi.md", "reseaux/tcp.md"], sujet
+            assert sources("Réseaux", "tout le cours")[0][1].startswith("# OSI\n## En bref")  # extrait sans frontmatter
+            assert [p for p, _ in sources("Réseaux", "toutes les couches osi")] == ["reseaux/osi.md"]  # « toutes » seul : sujet précis
+            assert run({"type": "fiche", "matiere": "", "sujet": "photosynthèse"})[0] == "erreur"  # rien nulle part
             assert run({"type": "inconnu", "sujet": "x"})[0] == "erreur"
 
             def illisible(*a):
