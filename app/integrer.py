@@ -210,11 +210,17 @@ def token_env():
     return env
 
 
-def ask(system, user, step):
+WEB_BUDGET_USD = os.environ.get("CLAUDE_WEB_BUDGET_USD", "1")  # plafond d'un appel avec recherche web (équivalent API)
+
+
+def ask(system, user, step, tools=""):
     # sans outils : une seule réponse, rien d'exécuté ; ni skills, ni MCP, ni CLAUDE.md découvert (cwd /tmp) : rien
-    # d'autre que la consigne et le prompt n'est envoyé (pas --bare : il refuse le jeton d'abonnement)
-    cmd = [CLAUDE, "-p", "--model", MODEL, "--output-format", "json", "--tools", "", "--system-prompt", system,
+    # d'autre que la consigne et le prompt n'est envoyé (pas --bare : il refuse le jeton d'abonnement).
+    # tools="WebSearch,WebFetch" : recherche web seulement (lire, jamais écrire ni exécuter), coût plafonné
+    cmd = [CLAUDE, "-p", "--model", MODEL, "--output-format", "json", "--tools", tools, "--system-prompt", system,
            "--no-session-persistence", "--disable-slash-commands", "--strict-mcp-config"]
+    if tools:
+        cmd += ["--allowedTools", tools, "--max-budget-usd", WEB_BUDGET_USD]
     t0 = time.time()
     try:
         r = subprocess.run(cmd, input=user, capture_output=True, text=True, timeout=TIMEOUT, env=token_env(), cwd="/tmp")
@@ -306,12 +312,12 @@ def links(overlay):
     return [(p, l) for p in overlay for l in re.findall(r"\]\(/([^)#\s]+)", overlay[p]) if l.rstrip("/") not in allp]
 
 
-def ask_parsed(system, user, step, cours, k, dump_dir):
+def ask_parsed(system, user, step, cours, k, dump_dir, tools=""):
     """Pages et rapport de la partie k. Une relance si la réponse n'a aucune balise : Claude répond parfois par une
     remarque de prudence sur un cours de sécurité offensive (vu le 11/11 : 489 tokens, puis 8 pages au 2e essai).
     Chaque réponse illisible est gardée dans dump_dir pour qu'on puisse la lire."""
     for essai in (1, 2):
-        res = ask(system, user, step)
+        res = ask(system, user, step, tools) if tools else ask(system, user, step)
         log_usage(cours, k, res)
         files, adds, report = parse(res.get("result", ""))
         if files or adds or report:

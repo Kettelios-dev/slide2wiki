@@ -59,6 +59,8 @@
   .types input { accent-color: var(--accent); margin: 0; }
   .types label:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); }
   .champs { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .champs > [hidden] { display: none; }
+  .champs.ajout > div:last-child { grid-column: 1 / -1; }  /* matière | page, puis « quoi ajouter » sur toute la ligne */
   @media (max-width: 560px) { .champs { grid-template-columns: 1fr; } }
   textarea { width: 100%; min-height: 64px; padding: 10px 12px; font: inherit; color: var(--ink); resize: vertical;
              background: var(--card); border: 1px solid var(--line); border-radius: 8px; margin-bottom: 12px; }
@@ -105,23 +107,32 @@
       <label><input type="radio" name="type" value="synthese"> une synthèse</label>
       <label><input type="radio" name="type" value="qcm"> un QCM</label>
       <label><input type="radio" name="type" value="question"> une réponse à une question</label>
+      <label><input type="radio" name="type" value="completer"> compléter une page</label>
     </fieldset>
-    <div class="champs">
+    <div class="champs" id="champs">
       <div>
         <label for="d-matiere">Matière du wiki</label>
         <input type="text" id="d-matiere" list="sujets" placeholder="toutes" autocomplete="off">
         <datalist id="sujets"></datalist>
       </div>
+      <div id="champ-page" hidden>
+        <label for="d-page">Page à compléter</label>
+        <input type="text" id="d-page" list="pages" placeholder="ex. securite-web/outils/nmap" autocomplete="off">
+        <datalist id="pages"></datalist>
+      </div>
       <div>
-        <label for="d-sujet">Sujet ou question</label>
+        <label for="d-sujet" id="label-sujet">Sujet ou question</label>
         <input type="text" id="d-sujet" placeholder="ex. le modèle OSI" autocomplete="off">
       </div>
     </div>
-    <div class="hint" style="margin-top:6px">Claude ne se sert que des pages de ton wiki les plus proches du sujet. Pour toute la matière : « tout le cours ».</div>
+    <div class="hint" id="hint-demande" style="margin-top:6px">Claude ne se sert que des pages de ton wiki les plus proches du sujet. Pour toute la matière : « tout le cours ».</div>
     <label for="d-consigne">Précisions (facultatif)</label>
     <textarea id="d-consigne" placeholder="ex. niveau examen, insister sur les pièges, 15 questions…"></textarea>
     <div class="actions">
-      <label><input type="checkbox" id="d-enregistrer" checked> Enregistrer dans le wiki</label>
+      <div style="display:flex;gap:16px;flex-wrap:wrap">
+        <label><input type="checkbox" id="d-enregistrer" checked> Enregistrer dans le wiki</label>
+        <label id="champ-web" hidden><input type="checkbox" id="d-web" checked> Chercher sur internet</label>
+      </div>
       <button class="primaire" id="d-envoyer">Générer</button>
     </div>
     <div id="res-etat" role="status" hidden></div>
@@ -186,7 +197,7 @@ async function rafraichir() {
     for (const j of jobs) {
       const li = el("li");
       li.append(el("span", "nom", j.nom), el("span", "etat " + j.etat, j.etat),
-                el("span", "meta", [j.matiere || "matière devinée", j.detail, heure(j.t)].filter(Boolean).join(" · ")));
+                el("span", "meta", [j.matiere || (j.demande ? "" : "matière devinée"), j.detail, heure(j.t)].filter(Boolean).join(" · ")));
       ul.append(li);
     }
   } catch {}
@@ -200,12 +211,12 @@ async function historique() {
   try {
     const rows = await (await fetch("/api/historique")).json();
     const ul = $("#historique"); ul.replaceChildren();
-    $("#compte").textContent = rows.length ? `${rows.length} PDF` : "";
+    $("#compte").textContent = rows.length ? `${rows.length} élément(s)` : "";
     if (!rows.length) ul.append(el("li", "vide", "Aucun PDF déposé pour l'instant."));
     for (const r of rows) {
       const li = el("li");
       li.append(el("span", "nom", r.nom), el("span", "etat " + r.etat, r.etat),
-                el("span", "meta", [r.matiere || "matière devinée", `déposé le ${date(r.depot)}`,
+                el("span", "meta", [r.matiere || (r.demande ? "" : "matière devinée"), `${r.demande ? "demandé" : "déposé"} le ${date(r.depot)}`,
                                     r.fin && r.fin > r.depot && `terminé en ${duree(r.fin - r.depot)}`, r.detail].filter(Boolean).join(" · ")));
       ul.append(li);
     }
@@ -233,25 +244,52 @@ async function sujets() {
   } catch {}
 }
 
+const HINT = $("#hint-demande").textContent;
+const typeChoisi = () => document.querySelector("input[name=type]:checked").value;
+
+function majType() {  // « compléter une page » : choix de la page, recherche web, et « quoi ajouter » au lieu du sujet
+  const ajout = typeChoisi() === "completer";
+  $("#champ-page").hidden = $("#champ-web").hidden = !ajout;
+  $("#champs").classList.toggle("ajout", ajout);
+  $("#label-sujet").textContent = ajout ? "Quoi ajouter" : "Sujet ou question";
+  $("#d-sujet").placeholder = ajout ? "ex. les options de scan UDP de nmap" : "ex. le modèle OSI";
+  $("#hint-demande").textContent = ajout
+    ? "Une section est ajoutée à la fin de la page, sans rien réécrire, marquée « à vérifier » avec ses sources web."
+    : HINT;
+  if (ajout) pages();
+}
+
+async function pages() {
+  try {
+    const l = await (await fetch(`/api/pages?matiere=${encodeURIComponent($("#d-matiere").value.trim())}`)).json();
+    $("#pages").replaceChildren(...l.map(p => Object.assign(document.createElement("option"), { value: p })));
+  } catch {}
+}
+
+document.querySelectorAll("input[name=type]").forEach(r => r.onchange = majType);
+$("#d-matiere").onchange = () => { if (typeChoisi() === "completer") pages(); };
+
 $("#d-envoyer").onclick = async () => {
   const sujet = $("#d-sujet").value.trim(), etat = $("#res-etat"), res = $("#resultat"), btn = $("#d-envoyer");
+  const type = typeChoisi();
+  if (type === "completer" && !$("#d-page").value.trim()) { $("#d-page").focus(); return; }
   if (!sujet) { $("#d-sujet").focus(); return; }
-  const d = { type: document.querySelector("input[name=type]:checked").value, matiere: $("#d-matiere").value.trim(),
-              sujet, consigne: $("#d-consigne").value.trim(), enregistrer: $("#d-enregistrer").checked };
+  const d = { type, matiere: $("#d-matiere").value.trim(), sujet, consigne: $("#d-consigne").value.trim(),
+              enregistrer: $("#d-enregistrer").checked, page: $("#d-page").value.trim(), web: $("#d-web").checked };
   btn.disabled = true; etat.hidden = false; etat.textContent = "Envoi…"; res.hidden = true;
   try {
     const r = await fetch("/api/demande", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(d) });
     const job = await r.json();
     if (!r.ok) throw new Error(job.erreur || `HTTP ${r.status}`);
     rafraichir();
-    for (;;) {  // une demande prend de quelques secondes à une minute : on suit son état
+    for (;;) {  // une demande prend de quelques secondes à quelques minutes (recherche web) : on suit son état
       await new Promise(ok => setTimeout(ok, 2000));
       const s = await (await fetch(`/api/demande?id=${job.id}`)).json();
       etat.textContent = s.detail || s.etat;
       if (["ok", "erreur", "attente", "interrompu"].includes(s.etat)) {
         if (s.markdown) { res.textContent = s.markdown; res.hidden = false; }
         if (s.chemin) {
-          etat.textContent = "Enregistrée dans le wiki : ";
+          etat.textContent = type === "completer" ? "Section ajoutée à : " : "Enregistrée dans le wiki : ";
           const a = el("a", null, "/" + s.chemin.replace(/\.md$/, ""));
           a.href = $("#wiki").href + s.chemin.replace(/\.md$/, ""); a.target = "_blank";
           etat.append(a);

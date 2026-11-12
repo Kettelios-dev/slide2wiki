@@ -24,6 +24,8 @@ results = {}  # id de demande -> page produite (markdown, chemin) ; les 20 derni
 def log(job, path=None, **extra):
     """Une ligne par étape (dépôt, fin) : l'historique survit aux redémarrages, contrairement à la liste en mémoire."""
     row = {k: job[k] for k in ("id", "nom", "matiere", "etat", "detail", "depot")} | extra
+    if job.get("demande"):
+        row["demande"] = True  # fiche, ajout… : pas un PDF (affichage de la page)
     with (path or HISTORY).open("a", encoding="utf-8") as f:
         f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
@@ -93,8 +95,9 @@ def add_job(pdf):
 def add_request(d):
     """Une demande (fiche, exercices…) passe par la même file que les PDF : un seul travail à la fois sur le wiki."""
     label = demandes.TYPES[d["type"]][1]
+    nom = f"{label} : {d['sujet']}" + (f" → /{d['page'].strip('/')}" + (" (web)" if d.get("web") else "") if d["type"] == "completer" else "")
     with lock:
-        job = {"id": str(time.time_ns()), "nom": f"{label} : {d['sujet']}", "matiere": d.get("matiere", ""),
+        job = {"id": str(time.time_ns()), "nom": nom, "matiere": d.get("matiere", ""),
                "etat": "en file", "detail": "", "t": time.time(), "depot": time.time(), "demande": True}
         jobs.append(job)
         log(job)
@@ -154,6 +157,12 @@ class H(BaseHTTPRequestHandler):
                 return self.send(200, {k: job[k] for k in ("etat", "detail")} | results.get(jid, {}))
         if path == "/api/config":  # adresse du wiki pour les liens de la page (WIKI_SITE_URL du .env)
             return self.send(200, {"wiki": os.environ.get("WIKI_SITE_URL", "").rstrip("/")})
+        if path == "/api/pages":  # pages du wiki (chemin sans .md) pour choisir celle à compléter, filtrées par matière
+            m = parse_qs(urlparse(self.path).query).get("matiere", [""])[0]
+            root = w.slug(m) if m else ""
+            paths = sorted(str(p.relative_to(w.WIKI)).replace("\\", "/")[:-3] for p in w.WIKI.rglob("*.md")
+                           if ".git" not in p.parts) if w.WIKI.exists() else []
+            return self.send(200, [p for p in paths if not root or p.startswith(root + "/")][:3000])
         if path == "/api/sujets":  # matières déjà présentes dans le wiki (dossiers racine)
             names = sorted((d.name for d in w.WIKI.iterdir() if d.is_dir() and not d.name.startswith(".")), key=str.lower) \
                 if w.WIKI.exists() else []
@@ -177,7 +186,10 @@ class H(BaseHTTPRequestHandler):
                 return self.send(400, {"erreur": "JSON invalide"})
             d = {"type": str(d.get("type", "")), "matiere": clean(str(d.get("matiere", ""))),
                  "sujet": str(d.get("sujet", "")).strip()[:200], "consigne": str(d.get("consigne", "")).strip()[:2000],
-                 "enregistrer": bool(d.get("enregistrer"))}
+                 "enregistrer": bool(d.get("enregistrer")), "page": str(d.get("page", "")).strip()[:300],
+                 "web": bool(d.get("web"))}
+            if d["type"] == "completer" and not demandes.page_path(d["page"]):
+                return self.send(400, {"erreur": "choisis la page à compléter"})
             if d["type"] not in demandes.TYPES or not d["sujet"]:
                 return self.send(400, {"erreur": "type de demande ou sujet manquant"})
             return self.send(200, add_request(d))

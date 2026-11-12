@@ -77,6 +77,12 @@ Sous la zone de dépôt, **Demander sur mes cours** : choisir ce que tu veux (**
 - Le résultat s'affiche sur la page. Avec **Enregistrer dans le wiki**, il devient une nouvelle page `<matière>/fiches/…` (ou `exercices/`, `syntheses/`, `qcm/`, `questions/`), avec la liste des pages utilisées en bas, en un commit (envoyé vers ton Wiki.js s'il est branché). Une page existante n'est jamais écrasée.
 - Coût : un appel, ≈ 15 000 tokens d'entrée au plus (les pages sources sont plafonnées), noté dans `data/claude-usage.csv`.
 
+**Compléter une page** (dernier choix) : la page à enrichir (liste des pages proposée), ce qu'il faut ajouter (« les options de scan UDP de nmap », « les nouveautés de PHP 8 »…) et, au choix, **Chercher sur internet** : Claude fait alors quelques recherches (3 recherches et 3 pages lues au plus, documentation officielle de préférence).
+- Seule une **section est ajoutée à la fin** de la page : rien de ce qui existe n'est réécrit.
+- Elle est marquée « ajouté le …, à partir de recherches web : ne vient pas du cours, à vérifier », avec les **sources web** utilisées : tu sais toujours ce qui vient du cours et ce qui vient d'internet.
+- Claude n'a que la recherche et la lecture web, aucun outil pour écrire ou exécuter quoi que ce soit ; un appel avec recherche web est plafonné à 1 $ d'équivalent API (`CLAUDE_WEB_BUDGET_USD`).
+- Si la page est modifiée dans Wiki.js pendant l'ajout, elle n'est pas écrasée : la section attend dans `data/a-revoir/ajouts/`.
+
 ### Adapter à ses cours
 
 `regles.md` contient les consignes données à Claude (organisation, style des pages, exactitude). Remplir au moins la section **Contexte** (formation, remarques). Le fichier est relu à chaque cours : pas besoin de reconstruire l'image.
