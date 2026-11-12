@@ -11,7 +11,7 @@ Chaque appel est journalisé dans claude-usage.csv (tokens) pour vérifier que �
 Reprise : les parties déjà faites sont gardées dans md/<cours>-<empreinte>.claude.json (un quota atteint ne refait rien de payé).
   python3 integrer.py cours.pdf [matiere]   # traite un PDF à la main (sinon appelé par watcher.handle)
 """
-import collections, csv, datetime, json, math, os, re, subprocess, sys, time
+import collections, csv, datetime, hashlib, json, math, os, re, subprocess, sys, time
 from pathlib import Path
 import watcher as w
 
@@ -22,6 +22,7 @@ USAGE = w.ROOT / "claude-usage.csv"
 REVIEW = w.ROOT / "a-revoir"  # pages refusées par les contrôles : rien n'est perdu, rien n'est écrasé
 MAX_UNIT_CHARS = 24000  # ~7k tokens de cours par appel
 PAGES_MAX, PAGE_CHARS, PAGES_CHARS = 5, 12000, 30000  # pages complètes envoyées pour être complétées
+LONG_MAX = 3  # longues pages (> PAGE_CHARS) envoyées en plan seulement, complétées par une section ajoutée
 INDEX_MAX, DIRS_MAX = 40, 80
 TIMEOUT = 900
 
@@ -40,8 +41,14 @@ def front(text):
     meta = {}
     for line in m.group(1).splitlines():
         k, _, v = line.partition(":")
+        v = v.strip()
+        if v.startswith('"'):  # écrit par finish() en JSON : « Le \"mur\" » doit redevenir « Le "mur" »
+            try:
+                v = json.loads(v)
+            except ValueError:
+                v = v.strip('"')
         if v:
-            meta[k.strip()] = v.strip().strip('"')
+            meta[k.strip()] = v
     return meta, text[m.end():]
 
 
@@ -132,11 +139,13 @@ def prompt(cours, part, n, unit, text, matiere, overlay):
     root = w.slug(matiere) if matiere else ""
     scope = [p for p in allp if p.startswith(root + "/")] if root else list(allp)
     ranked = rank(f"{titre} {titre} {text}", scope, overlay)
-    full, size = [], 0
-    for p in ranked:
+    full, long, size = [], [], 0
+    for p in ranked[:INDEX_MAX]:
         t = text_of(p, overlay)
         if len(full) < PAGES_MAX and len(t) <= PAGE_CHARS and size + len(t) <= PAGES_CHARS:
             full.append(p); size += len(t)
+        elif len(t) > PAGE_CHARS and len(long) < LONG_MAX:  # trop longue pour être renvoyée : son plan suffit pour y ajouter
+            long.append(p)
     index = []
     for p in ranked[:INDEX_MAX]:
         meta, _ = front(text_of(p, overlay))
@@ -154,6 +163,9 @@ def prompt(cours, part, n, unit, text, matiere, overlay):
     if full:
         out.append("## Pages à compléter si le cours en parle (contenu complet)\n" + "\n\n".join(
             f"<<<PAGE {p}>>>\n{text_of(p, overlay)}\n<<<FIN>>>" for p in full))
+    if long:
+        out.append("## Longues pages existantes (plan seulement) : pour les compléter, AJOUTE une section (voir plus bas)\n"
+                   + "\n\n".join(f"<<<PLAN {p}>>>\n{outline(text_of(p, overlay))}\n<<<FIN>>>" for p in long))
     out.append("## Diapos du cours (texte extrait du PDF)\n" + text)
     out.append(f"""## Réponse attendue
 Pour chaque page créée ou modifiée, son contenu COMPLET :
@@ -166,12 +178,23 @@ tags: …
 …
 <<<FIN>>>
 Tu ne peux modifier une page existante que si son contenu complet est donné ci-dessus ({', '.join(full) or 'aucune ici'}) ; pour une autre page existante, crée plutôt une page liée.
+Pour une longue page dont seul le plan est donné ({', '.join(long) or 'aucune ici'}), n'en réécris rien : ajoute ce qui manque en une section ajoutée à la fin de la page (sans frontmatter, titre ## nouveau) :
+<<<AJOUT chemin/relatif.md>>>
+## …
+<<<FIN>>>
 Puis termine par :
 <<<RAPPORT>>>
 une ligne par page : « créée chemin » ou « complétée chemin » — en quelques mots ; puis les doutes éventuels
 <<<FIN>>>
 Rien d'autre dans la réponse.""")
-    return "\n\n".join(out), set(full)
+    return "\n\n".join(out), set(full), set(long)
+
+
+def outline(text):
+    """Titre, description et titres de sections d'une page : ce qu'il faut pour y ajouter sans doublon."""
+    meta, body = front(text)
+    heads = re.findall(r"^#{2,3} .*$", body, re.M)
+    return "\n".join([f"title: {meta.get('title', '')}", f"description: {meta.get('description', '')}", *heads])
 
 
 def token_env():
@@ -221,9 +244,22 @@ def log_usage(cours, part, res):
 # ---------- réponse : contrôles puis écriture ----------
 
 def parse(answer):
-    files = re.findall(r"<<<FICHIER\s+(.+?)>>>\n(.*?)\n<<<FIN>>>", answer, re.S)
+    """(pages complètes, sections à ajouter à de longues pages, rapport)."""
+    block = lambda tag: [(p.strip().strip("`/"), t.strip() + "\n")
+                         for p, t in re.findall(rf"<<<{tag}\s+(.+?)>>>\n(.*?)\n<<<FIN>>>", answer, re.S)]
     report = re.search(r"<<<RAPPORT>>>\n(.*?)(?:\n<<<FIN>>>|$)", answer, re.S)
-    return [(p.strip().strip("`/"), t.strip() + "\n") for p, t in files], (report.group(1).strip() if report else "")
+    return block("FICHIER"), block("AJOUT"), (report.group(1).strip() if report else "")
+
+
+def append_section(path, text, long, overlay):
+    """Page longue + section ajoutée, ou None si l'ajout n'est pas acceptable (page non fournie, frontmatter, vide)."""
+    if path not in long or text.lstrip().startswith("---") or not re.match(r"\s*#{2,3} \S", text) or len(text.split()) < 15:
+        return None
+    return text_of(path, overlay).rstrip() + "\n\n" + text.strip() + "\n"
+
+
+def sha(text):
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def heads(text):
@@ -274,9 +310,9 @@ def ask_parsed(system, user, step, cours, k, dump_dir):
     for essai in (1, 2):
         res = ask(system, user, step)
         log_usage(cours, k, res)
-        files, report = parse(res.get("result", ""))
-        if files or report:
-            return files, report
+        files, adds, report = parse(res.get("result", ""))
+        if files or adds or report:
+            return files, adds, report
         dump_dir.mkdir(parents=True, exist_ok=True)
         (dump_dir / f"partie-{k}-essai-{essai}.txt").write_text(res.get("result", ""), encoding="utf-8")
         step(f"Claude : partie {k} illisible, nouvel essai")
@@ -296,24 +332,42 @@ def process(pdf, step=lambda s: None, matiere=None):
     state_path = md_path.with_suffix(".claude.json")
     state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.exists() else {"faites": [], "pages": {}, "rapport": []}
     overlay, system = state["pages"], RULES.read_text(encoding="utf-8")
+    seen = state.setdefault("vus", {})  # empreinte des pages du disque lues par Claude, pour repérer une édition concurrente
+
+    def review(path, text, why):  # rien n'est perdu ni écrasé : la page refusée attend dans a-revoir/
+        dest = REVIEW / pdf.stem / path
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(text, encoding="utf-8")
+        state["rapport"].append(f"REFUSÉE {path} ({why}) -> {dest}")
+
     for k, unit in enumerate(todo, 1):
         if f"{unit[1]}-{unit[2]}" in state["faites"]:
             continue
         step(f"Claude : partie {k}/{len(todo)} (diapos {unit[1]}-{unit[2]})")
-        user, given = prompt(pdf.name, k, len(todo), unit, slides(lines, unit[1], unit[2]), matiere, overlay)
-        files, report = ask_parsed(system, user, step, pdf.name, k, REVIEW / pdf.stem)
+        user, given, long = prompt(pdf.name, k, len(todo), unit, slides(lines, unit[1], unit[2]), matiere, overlay)
+        for p in given | long:
+            if p not in overlay:
+                seen.setdefault(p, sha(text_of(p, overlay)))
+        files, adds, report = ask_parsed(system, user, step, pdf.name, k, REVIEW / pdf.stem)
         for path, text in files:
             why = check(path, text, matiere, given, overlay)
             if why:
-                dest = REVIEW / pdf.stem / path
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                dest.write_text(text, encoding="utf-8")
-                state["rapport"].append(f"REFUSÉE {path} ({why}) -> {dest}")
+                review(path, text, why)
             else:
                 overlay[path] = finish(text, path, overlay)
+        for path, text in adds:
+            new = append_section(path, text, long, overlay)
+            if new is None:
+                review(path, text, "section ajoutée refusée : page non fournie en plan, frontmatter ou section vide")
+            else:
+                overlay[path] = new
         state["rapport"] += [l for l in report.splitlines() if l.strip()]
         state["faites"].append(f"{unit[1]}-{unit[2]}")
         state_path.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")  # reprise sans rien repayer
+    # une page modifiée dans Wiki.js (ou à la main) pendant l'intégration n'est pas écrasée : version de Claude à revoir
+    for p in [p for p in overlay if p in seen and (w.WIKI / p).exists()
+              and sha((w.WIKI / p).read_text(encoding="utf-8")) != seen[p]]:
+        review(p, overlay.pop(p), "page modifiée dans le wiki pendant l'intégration")
     broken = links(overlay)
     # tout est écrit d'un coup, en un commit : un échec en route ne laisse pas un wiki à moitié modifié
     created = sum(not (w.WIKI / p).exists() for p in overlay)
@@ -334,8 +388,16 @@ def process(pdf, step=lambda s: None, matiere=None):
 def selftest():
     t = "---\ntitle: XSS\ndescription: d\ntags: Web, XSS\n---\n## En bref\n" + "mot " * 20 + "\n## Se protéger\nx\n"
     assert front(t)[0]["title"] == "XSS" and heads(t) == {"en-bref", "se-proteger"}
-    files, rep = parse("blabla\n<<<FICHIER /web/xss.md>>>\n" + t + "<<<FIN>>>\n<<<RAPPORT>>>\ncréée web/xss.md\n<<<FIN>>>")
-    assert files == [("web/xss.md", t)] and rep == "créée web/xss.md"
+    files, adds, rep = parse("blabla\n<<<FICHIER /web/xss.md>>>\n" + t + "<<<FIN>>>\n<<<AJOUT web/http.md>>>\n## Cookies\nx\n<<<FIN>>>\n"
+                             "<<<RAPPORT>>>\ncréée web/xss.md\n<<<FIN>>>")
+    assert files == [("web/xss.md", t)] and adds == [("web/http.md", "## Cookies\nx\n")] and rep == "créée web/xss.md"
+    quoted = finish(t.replace("title: XSS", 'title: Le "mur" \\ fin'), "web/q.md", {})
+    assert front(finish(quoted, "web/q.md", {}))[0]["title"] == 'Le "mur" \\ fin'  # stable après plusieurs passages
+    sec = "## Cookies\n" + "mot " * 20
+    assert append_section("web/x.md", sec, {"web/x.md"}, {"web/x.md": t}) == t.rstrip() + "\n\n" + sec.strip() + "\n"
+    assert append_section("web/x.md", sec, set(), {"web/x.md": t}) is None  # page non envoyée en plan
+    assert append_section("web/x.md", "---\ntitle: X\n---\n" + sec, {"web/x.md"}, {"web/x.md": t}) is None
+    assert outline(t) == "title: XSS\ndescription: d\n## En bref\n## Se protéger"
     ov = {"web/xss.md": t}
     assert check("web/xss.md", t.replace("## Se protéger", "## Autre"), "web", set(), ov) == "page existante raccourcie ou section supprimée"
     assert check("web/xss.md", t + "ajout\n", "web", set(), ov) is None
@@ -373,7 +435,70 @@ def selftest():
             p.parent.mkdir(); p.write_bytes(data)
         assert w.cache_path(a) != w.cache_path(b) and w.cache_path(a) == w.cache_path(a)
         assert w.cache_path(a).name.startswith("Cours 1-") and w.cache_path(a).with_suffix(".claude.json").suffix == ".json"
+    selftest_process(t)
     print("selftest OK")
+
+
+def selftest_process(t):
+    """process() de bout en bout, Claude simulé : page écrite, page refusée gardée, un commit, reprise sans rappel,
+    page modifiée pendant l'intégration jamais écrasée."""
+    import tempfile
+    global ask, log_usage, REVIEW, USAGE, RULES
+    saved = ask, log_usage, REVIEW, USAGE, RULES, w.ROOT, w.INBOX, w.MD, w.WIKI, w.read_plan
+    git = lambda *a: subprocess.run(["git", "-C", str(w.WIKI), *a], check=True, capture_output=True, encoding="utf-8").stdout
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            w.ROOT = Path(d); w.INBOX, w.MD, w.WIKI = w.ROOT / "inbox", w.ROOT / "md", w.ROOT / "wiki"
+            REVIEW, USAGE, RULES = w.ROOT / "a-revoir", w.ROOT / "usage.csv", w.ROOT / "regles.md"
+            RULES.write_text("règles", encoding="utf-8")
+            for p in (w.INBOX / "web", w.MD, w.WIKI / "web"):
+                p.mkdir(parents=True)
+            git("init", "-q", "-b", "main"); git("config", "user.email", "t@t"); git("config", "user.name", "t")
+            (w.WIKI / "web" / "xss.md").write_text(t, encoding="utf-8"); git("add", "-A"); git("commit", "-q", "-m", "init")
+            pdf = w.INBOX / "web" / "c.pdf"; pdf.write_bytes(b"%PDF-1 cours")
+            # deux chapitres de 13 000 caractères : deux appels à Claude
+            w.cache_path(pdf).write_text(f"faille xss {'a' * 13000}\n{w.PAGE_MARK}\nfaille csrf {'b' * 13000}", encoding="utf-8")
+            w.read_plan = lambda pdf: {"chapitres": [{"titre": "XSS", "pages": [1, 1]}, {"titre": "CSRF", "pages": [2, 2]}]}
+            log_usage = lambda *a: None
+            csrf = t.replace("title: XSS", "title: CSRF")
+            replies = iter([  # partie 1 : xss.md raccourcie (refusée) ; partie 2 : quota atteint, puis csrf.md créée
+                "<<<FICHIER web/xss.md>>>\n---\ntitle: XSS\n---\n" + "mot " * 20 + "\n<<<FIN>>>\n<<<RAPPORT>>>\nok\n<<<FIN>>>",
+                Attente("quota"),
+                f"<<<FICHIER web/csrf.md>>>\n{csrf}<<<FIN>>>\n<<<RAPPORT>>>\ncréée web/csrf.md\n<<<FIN>>>"])
+            calls = []
+
+            def fake(*a):
+                calls.append(1); r = next(replies)
+                if isinstance(r, Exception):
+                    raise r
+                return {"result": r, "duree": 0}
+            ask = fake
+            try:
+                process(pdf); assert False, "le quota aurait dû arrêter la 2e partie"
+            except Attente:
+                pass
+            assert len(calls) == 2 and w.cache_path(pdf).with_suffix(".claude.json").exists()
+            assert git("log", "--oneline").count("\n") == 1  # rien écrit tant que le cours n'est pas fini
+            n, detail = process(pdf)  # reprise : seule la partie 2 est redemandée
+            assert len(calls) == 3 and n == 1 and detail.startswith("1 créées")
+            assert (w.WIKI / "web" / "csrf.md").exists() and (w.WIKI / "web" / "xss.md").read_text(encoding="utf-8") == t
+            assert (REVIEW / "c" / "web" / "xss.md").exists() and not w.cache_path(pdf).with_suffix(".claude.json").exists()
+            assert git("log", "-1", "--format=%s").startswith("cours: c.pdf (1 créées, 0 complétées)")
+            # édition concurrente : xss.md change pendant l'intégration, la version de Claude va dans a-revoir/
+            pdf2 = w.INBOX / "web" / "d.pdf"; pdf2.write_bytes(b"%PDF-1 autre")
+            w.cache_path(pdf2).write_text("faille xss " + "c" * 300, encoding="utf-8")
+            w.read_plan = lambda pdf: {"chapitres": []}
+            edited = t + "\nmodifié dans Wiki.js\n"
+
+            def fake2(*a):
+                (w.WIKI / "web" / "xss.md").write_text(edited, encoding="utf-8")
+                return {"result": f"<<<FICHIER web/xss.md>>>\n{t}ajout\n<<<FIN>>>\n<<<RAPPORT>>>\nx\n<<<FIN>>>", "duree": 0}
+            ask = fake2
+            process(pdf2)
+            assert (w.WIKI / "web" / "xss.md").read_text(encoding="utf-8") == edited
+            assert (REVIEW / "d" / "web" / "xss.md").exists()
+    finally:
+        ask, log_usage, REVIEW, USAGE, RULES, w.ROOT, w.INBOX, w.MD, w.WIKI, w.read_plan = saved
 
 
 if __name__ == "__main__":

@@ -65,14 +65,15 @@ Quota de l'abonnement atteint : le PDF reste « en attente », les parties déj�
 | `inbox/` | PDF déposés ; `_traites/` une fois faits, `_erreurs/` en cas d'échec |
 | `md/` | texte extrait par Docling (cache : un PDF n'est converti qu'une fois) |
 | `rapports/` | rapport de chaque cours |
-| `a-revoir/` | pages refusées par les contrôles (page existante raccourcie, chemin invalide…) : rien n'est écrasé |
+| `a-revoir/` | pages refusées par les contrôles (page existante raccourcie, chemin invalide, page modifiée pendant l'intégration…) : rien n'est écrasé |
 
 Sauvegarder `data/` suffit.
 
 ## Bon à savoir
 
 - **Pas de mot de passe sur la page de dépôt** : par défaut elle n'écoute que sur ce PC (`UPLOAD_BIND=127.0.0.1`). Pour l'ouvrir au réseau local, mettre `0.0.0.0`, en sachant que tout le monde sur le réseau pourra consommer ton quota.
-- **Wiki.js est en lecture seule** sur `data/wiki` (« Pull from target ») : une page modifiée dans l'éditeur de Wiki.js est écrasée à la synchro suivante (5 min). Corriger le fichier dans `data/wiki/` (et faire un commit) à la place.
+- **Corriger une page** : directement dans l'éditeur de Wiki.js (synchro Git dans les deux sens, toutes les 5 min) ou dans le fichier de `data/wiki/` (avec un commit). Si une page est modifiée pendant qu'un cours est en cours d'intégration, ta version est gardée et celle de Claude va dans `data/a-revoir/`.
+- **Pages longues** : au-delà de 12 000 caractères, Claude ne reçoit plus que le plan de la page et y ajoute une section à la fin, au lieu de créer une page en double.
 - **PDF scannés** : Docling fait l'OCR, mais le texte peut être moins bon et le plan du cours n'est pas détecté (Claude découpe alors par blocs).
 - **Retraiter un cours** : supprimer ses pages (`git rm` + commit dans `data/wiki`) et le PDF de `data/inbox/_traites/`, puis le redéposer.
 - **Linux** : si `data/` appartient à un autre utilisateur que 1000, mettre son uid/gid (`id`) dans `PUID` / `PGID`.

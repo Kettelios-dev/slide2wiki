@@ -35,7 +35,7 @@ services:
     image: ghcr.io/requarks/wiki:2.5
     restart: unless-stopped
     depends_on: [db]
-    user: root
+    user: "${PUID:-1000}:${PGID:-1000}"  # même propriétaire que data/wiki, où Wiki.js pousse les pages éditées
     ports: ["${WIKI_BIND:-127.0.0.1}:${WIKI_PORT:-3000}:3000"]
     environment:
       DB_TYPE: postgres
@@ -44,12 +44,12 @@ services:
       DB_USER: wikijs
       DB_PASS: ${DB_PASS:-wikijs-local}
       DB_NAME: wiki
-      # le dépôt data/wiki appartient à l'utilisateur de l'hôte, pas à root : git refuserait de le lire
+      # sous Windows/Mac, data/wiki n'a pas le même propriétaire vu du conteneur : git refuserait de le lire
       GIT_CONFIG_COUNT: "1"
       GIT_CONFIG_KEY_0: safe.directory
       GIT_CONFIG_VALUE_0: "*"
     volumes:
-      - ./data/wiki:/cours/wiki:ro  # Wiki.js ne fait que lire le dépôt (« Pull from target ») ; /wiki est son propre code
+      - ./data/wiki:/cours/wiki  # synchro Git dans les deux sens ; /wiki est le code de Wiki.js lui-même
 
 volumes:
   db-data:

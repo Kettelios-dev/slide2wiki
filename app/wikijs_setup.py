@@ -11,7 +11,7 @@ URL = os.environ.get("WIKIJS_URL", "http://wiki:3000").rstrip("/")
 EMAIL, PASSWORD = os.environ.get("WIKI_ADMIN_EMAIL", ""), os.environ.get("WIKI_ADMIN_PASSWORD", "")
 SITE = os.environ.get("WIKI_SITE_URL", "http://localhost:3000")
 
-GIT = {  # stockage Git de Wiki.js 2 : dépôt local monté en /cours/wiki, lu seulement (« Pull from target »)
+GIT = {  # stockage Git de Wiki.js 2 : dépôt local monté en /cours/wiki, synchro dans les deux sens
     "authType": "ssh",  # en « basic », Wiki.js préfixe https:// et casse un chemin local
     "repoUrl": "/cours/wiki", "branch": "main",
     "sshPrivateKeyMode": "path", "sshPrivateKeyPath": "/dev/null", "sshPrivateKeyContent": "",
@@ -76,7 +76,9 @@ def main():
             time.sleep(5)
     else:
         return log(f"connexion admin impossible ({err}) : vérifier WIKI_ADMIN_EMAIL / WIKI_ADMIN_PASSWORD")
-    target = {"isEnabled": True, "key": "git", "mode": "pull", "syncInterval": "PT5M",
+    # « sync » : une page modifiée dans l'éditeur de Wiki.js est poussée dans data/wiki (et n'est plus écrasée) ;
+    # integrer.py ne réécrit jamais une page modifiée pendant qu'il travaillait (elle va dans a-revoir/)
+    target = {"isEnabled": True, "key": "git", "mode": "sync", "syncInterval": "PT5M",
               "config": [{"key": k, "value": json.dumps({"v": v})} for k, v in GIT.items()]}
     res = gql("mutation($t:[StorageTargetInput]!){storage{updateTargets(targets:$t){responseResult{succeeded message}}}}",
               token, t=[target])["storage"]["updateTargets"]["responseResult"]

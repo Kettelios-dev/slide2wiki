@@ -8,6 +8,8 @@ if [ ! -d "$COURS_ROOT/wiki/.git" ]; then
   git -C "$COURS_ROOT/wiki" config user.email "${GIT_EMAIL:-slide2wiki@localhost}"
   git -C "$COURS_ROOT/wiki" commit -q --allow-empty -m "init wiki"
 fi
+# Wiki.js pousse ses modifications dans ce dépôt non-bare : met à jour les fichiers au lieu de refuser
+git -C "$COURS_ROOT/wiki" config receive.denyCurrentBranch updateInstead
 case "$COMPOSE_PROFILES" in
   *wikijs*) python3 /app/wikijs_setup.py & ;;
 esac
