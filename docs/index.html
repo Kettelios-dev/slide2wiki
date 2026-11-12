@@ -1,0 +1,365 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>slide2wiki — tes cours deviennent un wiki de révision</title>
+<meta name="description" content="Glisse tes PDF de cours : Claude les range dans un wiki de révision par sujet, avec fiches, exercices et QCM. Auto-hébergé, Docker, open source.">
+<style>
+  :root {
+    --bg: #07070c; --bg2: #0e0e18; --ink: #f2f0ff; --muted: #9b98b8; --line: #23223a;
+    --a: #7c5cff; --b: #22d3ee; --c: #f472b6; --ok: #34d399;
+    --glow: 0 0 40px rgba(124, 92, 255, .35);
+  }
+  * { box-sizing: border-box; margin: 0; }
+  html { scroll-behavior: smooth; }
+  body { background: var(--bg); color: var(--ink); font: 17px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif; overflow-x: hidden; }
+  a { color: inherit; }
+  code, pre, .mono { font-family: ui-monospace, "Cascadia Code", Consolas, monospace; }
+  .wrap { max-width: 1120px; margin: 0 auto; padding: 0 20px; }
+  .grad { background: linear-gradient(90deg, var(--a), var(--b) 50%, var(--c)); -webkit-background-clip: text; background-clip: text; color: transparent; }
+
+  /* fond : grille + halos qui respirent */
+  .bgfx { position: fixed; inset: 0; z-index: -1; pointer-events: none;
+          background:
+            radial-gradient(600px 400px at 15% 10%, rgba(124,92,255,.22), transparent 60%),
+            radial-gradient(500px 400px at 85% 30%, rgba(34,211,238,.14), transparent 60%),
+            radial-gradient(700px 500px at 50% 110%, rgba(244,114,182,.12), transparent 60%),
+            var(--bg); }
+  .bgfx::after { content: ""; position: absolute; inset: 0; opacity: .35;
+                 background-image: linear-gradient(var(--line) 1px, transparent 1px), linear-gradient(90deg, var(--line) 1px, transparent 1px);
+                 background-size: 48px 48px; mask-image: radial-gradient(ellipse at 50% 0%, #000 30%, transparent 75%); }
+
+  nav { position: sticky; top: 0; z-index: 10; backdrop-filter: blur(12px); background: rgba(7,7,12,.6); border-bottom: 1px solid var(--line); }
+  nav .wrap { display: flex; align-items: center; justify-content: space-between; height: 60px; gap: 16px; }
+  .logo { font-weight: 800; letter-spacing: -.02em; font-size: 19px; display: flex; gap: 8px; align-items: center; text-decoration: none; }
+  .logo i { width: 22px; height: 22px; border-radius: 6px; background: linear-gradient(135deg, var(--a), var(--b)); box-shadow: var(--glow); display: inline-block; }
+  nav ul { list-style: none; display: flex; gap: 22px; padding: 0; font-size: 15px; }
+  nav ul a { text-decoration: none; color: var(--muted); } nav ul a:hover { color: var(--ink); }
+  .btn { display: inline-flex; align-items: center; gap: 8px; padding: 12px 20px; border-radius: 12px; font-weight: 600; text-decoration: none;
+         border: 1px solid var(--line); background: rgba(255,255,255,.03); cursor: pointer; color: var(--ink); font-size: 16px; transition: .2s; }
+  .btn:hover { border-color: var(--a); transform: translateY(-2px); }
+  .btn.main { background: linear-gradient(90deg, var(--a), #5b8cff); border: 0; box-shadow: var(--glow); }
+  .btn.small { padding: 8px 14px; font-size: 14px; }
+  @media (max-width: 720px) { nav ul { display: none; } }
+
+  /* hero */
+  .hero { padding: 90px 0 40px; display: grid; grid-template-columns: 1.05fr .95fr; gap: 48px; align-items: center; }
+  .pill { display: inline-flex; gap: 8px; align-items: center; font-size: 13px; padding: 6px 12px; border: 1px solid var(--line); border-radius: 99px; color: var(--muted); background: rgba(255,255,255,.03); }
+  .pill b { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 10px var(--ok); }
+  h1 { font-size: clamp(40px, 6.2vw, 74px); line-height: 1.02; letter-spacing: -.04em; margin: 20px 0 18px; font-weight: 850; }
+  .lead { font-size: 20px; color: var(--muted); max-width: 34ch; }
+  .cta { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 30px; }
+  @media (max-width: 900px) { .hero { grid-template-columns: 1fr; padding-top: 56px; } }
+
+  /* machine animée : diapos -> moteur -> pages */
+  .machine { position: relative; aspect-ratio: 1 / 1; max-width: 520px; width: 100%; margin: 0 auto; }
+  .machine svg { width: 100%; height: 100%; overflow: visible; }
+  .slide { animation: tombe 6s cubic-bezier(.5,0,.5,1) infinite; transform-box: fill-box; }
+  .slide:nth-of-type(2) { animation-delay: -2s; } .slide:nth-of-type(3) { animation-delay: -4s; }
+  @keyframes tombe { 0% { transform: translate(0,-40px) rotate(-8deg); opacity: 0 } 15% { opacity: 1 }
+                     45% { transform: translate(150px, 150px) rotate(0); opacity: 1 } 55%, 100% { transform: translate(150px,160px) scale(.2); opacity: 0 } }
+  .page { animation: sort 6s cubic-bezier(.3,.6,.3,1) infinite; transform-box: fill-box; opacity: 0 }
+  .page:nth-of-type(5) { animation-delay: -2s; } .page:nth-of-type(6) { animation-delay: -4s; }
+  @keyframes sort { 0%, 50% { transform: translate(0,0) scale(.3); opacity: 0 } 62% { opacity: 1 }
+                    100% { transform: translate(var(--dx), var(--dy)) scale(1); opacity: 0 } }
+  .core { animation: pulse 2s ease-in-out infinite; transform-origin: 260px 300px; }
+  @keyframes pulse { 50% { transform: scale(1.06); filter: drop-shadow(0 0 30px rgba(124,92,255,.8)); } }
+  .ring { animation: tourne 14s linear infinite; transform-origin: 260px 300px; }
+  @keyframes tourne { to { transform: rotate(360deg); } }
+
+  section { padding: 90px 0; }
+  h2 { font-size: clamp(30px, 4vw, 46px); letter-spacing: -.03em; line-height: 1.1; margin-bottom: 14px; }
+  .sub { color: var(--muted); max-width: 60ch; margin-bottom: 44px; }
+
+  /* étapes */
+  .steps { display: grid; grid-template-columns: repeat(5, 1fr); gap: 14px; counter-reset: s; }
+  .step { position: relative; padding: 22px 18px; border: 1px solid var(--line); border-radius: 18px; background: linear-gradient(180deg, var(--bg2), transparent); }
+  .step::before { counter-increment: s; content: "0" counter(s); font: 700 13px ui-monospace, monospace; color: var(--b); }
+  .step h3 { font-size: 17px; margin: 10px 0 6px; } .step p { font-size: 14.5px; color: var(--muted); }
+  @media (max-width: 960px) { .steps { grid-template-columns: 1fr 1fr; } }
+  @media (max-width: 560px) { .steps { grid-template-columns: 1fr; } }
+
+  /* démo interactive */
+  .demo { display: grid; grid-template-columns: 340px 1fr; border: 1px solid var(--line); border-radius: 22px; overflow: hidden; background: var(--bg2); box-shadow: 0 30px 80px rgba(0,0,0,.5); }
+  .demo aside { padding: 22px; border-right: 1px solid var(--line); display: flex; flex-direction: column; gap: 14px; }
+  .demo label { font-size: 13px; color: var(--muted); }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; }
+  .chip { padding: 7px 12px; border-radius: 99px; border: 1px solid var(--line); background: none; color: var(--ink); cursor: pointer; font-size: 14px; }
+  .chip[aria-pressed=true] { border-color: var(--a); background: rgba(124,92,255,.18); }
+  .demo select, .demo input { width: 100%; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); font: inherit; font-size: 15px; }
+  .demo output { display: block; padding: 22px 26px; min-height: 420px; max-height: 520px; overflow: auto; font-size: 15px; }
+  .demo output h4 { font-size: 22px; margin-bottom: 8px; } .demo output h5 { font-size: 16px; margin: 16px 0 6px; color: var(--b); }
+  .demo output ul { padding-left: 20px; } .demo output li { margin: 3px 0; }
+  .demo output code { background: rgba(255,255,255,.07); padding: 1px 6px; border-radius: 6px; font-size: 13.5px; }
+  .callout { border-left: 3px solid var(--c); background: rgba(244,114,182,.08); padding: 10px 14px; border-radius: 0 10px 10px 0; margin: 12px 0; font-size: 14.5px; }
+  .src { margin-top: 16px; font-size: 13px; color: var(--muted); border-top: 1px dashed var(--line); padding-top: 10px; }
+  .caret { display: inline-block; width: 8px; height: 1em; background: var(--b); vertical-align: -2px; animation: clign 1s steps(1) infinite; }
+  @keyframes clign { 50% { opacity: 0 } }
+  .status { font: 13px ui-monospace, monospace; color: var(--ok); }
+  @media (max-width: 860px) { .demo { grid-template-columns: 1fr; } .demo aside { border-right: 0; border-bottom: 1px solid var(--line); } }
+
+  /* fonctionnalités */
+  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+  .card { padding: 26px; border: 1px solid var(--line); border-radius: 20px; background: var(--bg2); position: relative; overflow: hidden; transition: .25s; }
+  .card:hover { transform: translateY(-4px); border-color: rgba(124,92,255,.6); }
+  .card::after { content: ""; position: absolute; inset: auto -40% -60% auto; width: 220px; height: 220px; border-radius: 50%;
+                 background: radial-gradient(circle, rgba(124,92,255,.25), transparent 70%); }
+  .card .ic { font-size: 26px; } .card h3 { margin: 10px 0 6px; font-size: 19px; } .card p { color: var(--muted); font-size: 15px; }
+  @media (max-width: 900px) { .grid { grid-template-columns: 1fr 1fr; } } @media (max-width: 600px) { .grid { grid-template-columns: 1fr; } }
+
+  /* chiffres */
+  .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; text-align: center; }
+  .stat { padding: 28px 12px; border-radius: 20px; border: 1px solid var(--line); background: var(--bg2); }
+  .stat b { display: block; font-size: 44px; letter-spacing: -.03em; line-height: 1.1; }
+  .stat span { color: var(--muted); font-size: 14px; }
+  @media (max-width: 760px) { .stats { grid-template-columns: 1fr 1fr; } }
+
+  /* installation */
+  .term { border: 1px solid var(--line); border-radius: 18px; background: #05050a; overflow: hidden; }
+  .term header { display: flex; align-items: center; gap: 7px; padding: 12px 16px; border-bottom: 1px solid var(--line); }
+  .term header i { width: 11px; height: 11px; border-radius: 50%; background: #ff5f57; } .term header i:nth-child(2) { background: #febc2e; } .term header i:nth-child(3) { background: #28c840; }
+  .term header button { margin-left: auto; }
+  .term pre { padding: 20px 22px; overflow-x: auto; font-size: 14.5px; line-height: 1.8; }
+  .term .c { color: var(--muted); } .term .p { color: var(--b); user-select: none; }
+
+  details { border: 1px solid var(--line); border-radius: 14px; padding: 16px 20px; background: var(--bg2); margin-bottom: 10px; }
+  summary { cursor: pointer; font-weight: 600; } details p { color: var(--muted); margin-top: 10px; }
+
+  footer { border-top: 1px solid var(--line); padding: 40px 0 60px; color: var(--muted); font-size: 14px; }
+  footer .wrap { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
+
+  .reveal { opacity: 0; transform: translateY(24px); transition: .7s cubic-bezier(.2,.7,.2,1); }
+  .reveal.vu { opacity: 1; transform: none; }
+  :focus-visible { outline: 2px solid var(--b); outline-offset: 3px; border-radius: 6px; }
+  @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } .reveal { opacity: 1; transform: none; } .page { opacity: 1; } }
+</style>
+</head>
+<body>
+<div class="bgfx" aria-hidden="true"></div>
+
+<nav>
+  <div class="wrap">
+    <a class="logo" href="#"><i></i>slide2wiki</a>
+    <ul>
+      <li><a href="#comment">Comment ça marche</a></li>
+      <li><a href="#demo">Démo</a></li>
+      <li><a href="#fonctions">Fonctions</a></li>
+      <li><a href="#installer">Installer</a></li>
+    </ul>
+    <a class="btn small" href="https://github.com/Kettelios-dev/slide2wiki">★ GitHub</a>
+  </div>
+</nav>
+
+<main>
+<div class="wrap hero">
+  <div>
+    <span class="pill"><b></b>Open source · auto-hébergé · Docker</span>
+    <h1>Tes cours en PDF.<br><span class="grad">Un wiki de révision.</span></h1>
+    <p class="lead">Glisse tes diapos : Claude les range <strong>par sujet</strong>, complète ce qui existe déjà, et te prépare fiches, exercices et QCM à la demande.</p>
+    <div class="cta">
+      <a class="btn main" href="#installer">Installer en 5 min →</a>
+      <a class="btn" href="#demo">Voir la démo</a>
+    </div>
+  </div>
+
+  <div class="machine" aria-hidden="true">
+    <svg viewBox="0 0 520 600">
+      <defs>
+        <linearGradient id="g1" x1="0" x2="1"><stop offset="0" stop-color="#7c5cff"/><stop offset="1" stop-color="#22d3ee"/></linearGradient>
+        <linearGradient id="g2" x1="0" x2="1" y1="0" y2="1"><stop offset="0" stop-color="#1b1830"/><stop offset="1" stop-color="#0e0e18"/></linearGradient>
+      </defs>
+      <g class="slide"><rect x="40" y="40" width="130" height="90" rx="10" fill="url(#g2)" stroke="#f472b6"/><rect x="55" y="58" width="70" height="8" rx="4" fill="#f472b6"/><rect x="55" y="76" width="95" height="5" rx="3" fill="#3b3858"/><rect x="55" y="88" width="80" height="5" rx="3" fill="#3b3858"/><text x="140" y="120" fill="#f472b6" font-size="11" font-family="monospace">PDF</text></g>
+      <g class="slide"><rect x="40" y="40" width="130" height="90" rx="10" fill="url(#g2)" stroke="#f472b6"/><rect x="55" y="58" width="60" height="8" rx="4" fill="#f472b6"/><rect x="55" y="76" width="95" height="5" rx="3" fill="#3b3858"/><rect x="55" y="88" width="60" height="5" rx="3" fill="#3b3858"/><text x="140" y="120" fill="#f472b6" font-size="11" font-family="monospace">PDF</text></g>
+      <g class="slide"><rect x="40" y="40" width="130" height="90" rx="10" fill="url(#g2)" stroke="#f472b6"/><rect x="55" y="58" width="80" height="8" rx="4" fill="#f472b6"/><rect x="55" y="76" width="70" height="5" rx="3" fill="#3b3858"/><rect x="55" y="88" width="90" height="5" rx="3" fill="#3b3858"/><text x="140" y="120" fill="#f472b6" font-size="11" font-family="monospace">PDF</text></g>
+      <g class="page" style="--dx:-150px; --dy:150px"><rect x="210" y="280" width="110" height="140" rx="10" fill="url(#g2)" stroke="#22d3ee"/><rect x="224" y="296" width="60" height="7" rx="3" fill="#22d3ee"/><rect x="224" y="314" width="80" height="4" rx="2" fill="#3b3858"/><rect x="224" y="324" width="70" height="4" rx="2" fill="#3b3858"/><rect x="224" y="340" width="40" height="5" rx="2" fill="#7c5cff"/><rect x="224" y="352" width="78" height="4" rx="2" fill="#3b3858"/></g>
+      <g class="page" style="--dx:0px; --dy:200px"><rect x="210" y="280" width="110" height="140" rx="10" fill="url(#g2)" stroke="#22d3ee"/><rect x="224" y="296" width="70" height="7" rx="3" fill="#22d3ee"/><rect x="224" y="314" width="80" height="4" rx="2" fill="#3b3858"/><rect x="224" y="340" width="50" height="5" rx="2" fill="#7c5cff"/><rect x="224" y="352" width="78" height="4" rx="2" fill="#3b3858"/></g>
+      <g class="page" style="--dx:150px; --dy:150px"><rect x="210" y="280" width="110" height="140" rx="10" fill="url(#g2)" stroke="#22d3ee"/><rect x="224" y="296" width="50" height="7" rx="3" fill="#22d3ee"/><rect x="224" y="314" width="80" height="4" rx="2" fill="#3b3858"/><rect x="224" y="324" width="60" height="4" rx="2" fill="#3b3858"/><rect x="224" y="340" width="45" height="5" rx="2" fill="#7c5cff"/></g>
+      <g class="ring"><circle cx="260" cy="300" r="118" fill="none" stroke="url(#g1)" stroke-width="2" stroke-dasharray="6 14" opacity=".7"/></g>
+      <g class="core"><circle cx="260" cy="300" r="74" fill="#0e0e18" stroke="url(#g1)" stroke-width="3"/><text x="260" y="294" text-anchor="middle" fill="#f2f0ff" font-size="17" font-weight="800" font-family="system-ui">Claude</text><text x="260" y="316" text-anchor="middle" fill="#9b98b8" font-size="11" font-family="monospace">+ Docling</text></g>
+    </svg>
+  </div>
+</div>
+
+<section id="comment">
+  <div class="wrap">
+    <h2 class="reveal">Du PDF à la page de wiki, <span class="grad">sans rien faire</span></h2>
+    <p class="sub reveal">Tu déposes. Le reste se fait tout seul, et rien n'est écrit sans être vérifié.</p>
+    <div class="steps">
+      <div class="step reveal"><h3>Dépôt</h3><p>Glisser-déposer sur une page web, une matière au choix.</p></div>
+      <div class="step reveal"><h3>Lecture</h3><p>Docling extrait le texte (OCR compris) et le plan est lu dans le PDF : chapitres, diapos-intercalaires.</p></div>
+      <div class="step reveal"><h3>Rédaction</h3><p>Claude range chaque notion à sa place et complète les pages qui existent déjà.</p></div>
+      <div class="step reveal"><h3>Contrôles</h3><p>Page raccourcie, section supprimée, mauvais dossier : refusé et mis de côté. Rien n'est écrasé.</p></div>
+      <div class="step reveal"><h3>Wiki</h3><p>Un commit Git par cours, et la page apparaît dans Wiki.js quelques secondes après.</p></div>
+    </div>
+  </div>
+</section>
+
+<section id="demo">
+  <div class="wrap">
+    <h2 class="reveal">Demande. <span class="grad">Révise.</span></h2>
+    <p class="sub reveal">Une fois tes cours dans le wiki, demande une fiche, des exercices ou un QCM : Claude ne s'appuie que sur <em>tes</em> pages, et cite lesquelles. (Démo simulée.)</p>
+    <div class="demo reveal">
+      <aside>
+        <div>
+          <label id="l-type">Je veux</label>
+          <div class="chips" role="group" aria-labelledby="l-type">
+            <button class="chip" data-t="fiche" aria-pressed="true">une fiche</button>
+            <button class="chip" data-t="exos" aria-pressed="false">des exercices</button>
+            <button class="chip" data-t="qcm" aria-pressed="false">un QCM</button>
+            <button class="chip" data-t="web" aria-pressed="false">compléter (web)</button>
+          </div>
+        </div>
+        <div>
+          <label for="sujet">Sujet</label>
+          <select id="sujet">
+            <option value="xss">La faille XSS</option>
+            <option value="osi">Le modèle OSI</option>
+            <option value="ptr">Les pointeurs en C</option>
+          </select>
+        </div>
+        <button class="btn main" id="go">Générer ✨</button>
+        <span class="status" id="st" role="status"></span>
+      </aside>
+      <output id="out" aria-live="polite"><span class="caret"></span></output>
+    </div>
+  </div>
+</section>
+
+<section id="fonctions">
+  <div class="wrap">
+    <h2 class="reveal">Tout ce qu'il faut, <span class="grad">rien de trop</span></h2>
+    <p class="sub reveal">Pensé pour réviser, pas pour collectionner des PDF.</p>
+    <div class="grid">
+      <div class="card reveal"><div class="ic">🧭</div><h3>Rangé par sujet</h3><p>Pas une page par diapo : une page par notion, et les cours suivants complètent ce qui existe au lieu de dupliquer.</p></div>
+      <div class="card reveal"><div class="ic">🧠</div><h3>Fiches, exercices, QCM</h3><p>Générés à partir de ton wiki, enregistrés comme nouvelles pages avec leurs sources. Ou juste une réponse à une question.</p></div>
+      <div class="card reveal"><div class="ic">🌐</div><h3>Compléter avec le web</h3><p>« Ajoute les options de scan UDP de nmap » : recherche ciblée, section ajoutée et marquée « à vérifier » avec ses liens.</p></div>
+      <div class="card reveal"><div class="ic">🔍</div><h3>Doutes signalés</h3><p>Erreur dans le cours, slide illisible, contradiction entre deux diapos : c'est écrit dans le rapport, pas inventé.</p></div>
+      <div class="card reveal"><div class="ic">🔁</div><h3>Ton Wiki.js</h3><p>Le Wiki.js fourni est configuré tout seul, ou branche le tien par un dépôt Git partagé, dans les deux sens.</p></div>
+      <div class="card reveal"><div class="ic">🔒</div><h3>Chez toi</h3><p>Tout tourne sur ta machine. Claude n'a aucun outil pour écrire ou exécuter : il rend du texte, un script le vérifie.</p></div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2 class="reveal">Un coût qui <span class="grad">ne grossit pas</span></h2>
+    <p class="sub reveal">Claude ne lit jamais tout le wiki : seulement le cours et les pages les plus proches. Mesuré sur de vrais cours.</p>
+    <div class="stats">
+      <div class="stat reveal"><b class="grad" data-n="15">0</b><span>k tokens max par appel,<br>même avec 1 000 pages</span></div>
+      <div class="stat reveal"><b class="grad" data-n="30">0</b><span>secondes pour un cours<br>de 23 diapos</span></div>
+      <div class="stat reveal"><b class="grad" data-n="2">0</b><span>appels pour un cours<br>de 82 diapos</span></div>
+      <div class="stat reveal"><b class="grad" data-n="4">0</b><span>secondes avant la page<br>dans Wiki.js</span></div>
+    </div>
+  </div>
+</section>
+
+<section id="installer">
+  <div class="wrap">
+    <h2 class="reveal">Installé en <span class="grad">5 commandes</span></h2>
+    <p class="sub reveal">Il faut Docker et un abonnement Claude (ou une clé API). Linux, Windows, Mac.</p>
+    <div class="term reveal">
+      <header><i></i><i></i><i></i><button class="btn small" id="copy">Copier</button></header>
+<pre id="cmds"><span class="p">$ </span>git clone https://github.com/Kettelios-dev/slide2wiki.git && cd slide2wiki
+<span class="p">$ </span>cp .env.example .env
+<span class="p">$ </span>docker compose build
+<span class="p">$ </span>docker compose run --rm --entrypoint claude app setup-token   <span class="c"># puis colle le jeton dans .env</span>
+<span class="p">$ </span>docker compose up -d   <span class="c"># → http://localhost:8000</span></pre>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2 class="reveal">Questions</h2>
+    <details class="reveal"><summary>Ça marche avec n'importe quel cours ?</summary><p>Diapos et polycopiés en PDF, de toute matière. Le plan est détecté quand le PDF en a un (intercalaires, sommaire) ; sinon le cours est découpé en blocs. Les PDF scannés passent par l'OCR.</p></details>
+    <details class="reveal"><summary>Et si Claude se trompe ?</summary><p>Il ne peut ni écraser ni raccourcir une page : les contrôles le refusent et mettent sa version de côté. Chaque cours est un commit Git, annulable en une commande. Et ses doutes sont listés dans le rapport.</p></details>
+    <details class="reveal"><summary>Je peux corriger les pages moi-même ?</summary><p>Oui, dans l'éditeur de Wiki.js ou dans les fichiers Markdown. Une page modifiée pendant qu'un cours est intégré n'est jamais écrasée.</p></details>
+    <details class="reveal"><summary>Ça coûte combien ?</summary><p>Rien de plus que ton abonnement Claude : un cours de 80 diapos, c'est 2 appels d'environ 10k tokens. Chaque appel est noté dans un fichier pour suivre la consommation.</p></details>
+  </div>
+</section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <span>slide2wiki · licence MIT</span>
+    <a href="https://github.com/Kettelios-dev/slide2wiki">github.com/Kettelios-dev/slide2wiki</a>
+  </div>
+</footer>
+
+<script>
+const $ = s => document.querySelector(s);
+
+// apparition au défilement, compteurs animés une fois visibles
+const io = new IntersectionObserver(es => es.forEach(e => {
+  if (!e.isIntersecting) return;
+  e.target.classList.add("vu");
+  const n = e.target.querySelector("[data-n]");
+  if (n) { const end = +n.dataset.n, t0 = performance.now();
+           const f = t => { const k = Math.min(1, (t - t0) / 1200); n.textContent = Math.round(end * (1 - (1 - k) ** 3)); if (k < 1) requestAnimationFrame(f); };
+           requestAnimationFrame(f); }
+  io.unobserve(e.target);
+}), { threshold: .15 });
+document.querySelectorAll(".reveal").forEach(el => io.observe(el));
+
+// démo : contenus écrits à l'avance, « tapés » à l'écran (aucun appel réseau)
+const SUJETS = { xss: "La faille XSS", osi: "Le modèle OSI", ptr: "Les pointeurs en C" };
+const DEMO = {
+  fiche: {
+    xss: `<h4>Fiche — la faille XSS</h4><h5>En bref</h5><p>Du <strong>JavaScript injecté</strong> s'exécute dans le navigateur d'une victime, parce que le site affiche une entrée sans l'encoder.</p><h5>À retenir</h5><ul><li><strong>Stockée</strong> : enregistrée (commentaire) et servie à tous.</li><li><strong>Réfléchie</strong> : dans un lien piégé, renvoyée par le serveur.</li><li>Parade : encoder la sortie, <code>htmlspecialchars($x, ENT_QUOTES)</code>, CSP.</li></ul><div class="callout"><strong>Piège</strong> : interdire <code>&lt;script&gt;</code> ne suffit pas, <code>&lt;img onerror&gt;</code> passe.</div>`,
+    osi: `<h4>Fiche — le modèle OSI</h4><h5>En bref</h5><p><strong>7 couches</strong> qui découpent une communication, du câble à l'application.</p><h5>À retenir</h5><ul><li>1 Physique · 2 Liaison · 3 Réseau · 4 Transport</li><li>5 Session · 6 Présentation · 7 Application</li><li>Couche 2 : adresses MAC, switch · couche 3 : IP, routeur.</li></ul><div class="callout"><strong>Piège</strong> : TCP/IP a 4 couches, pas 7.</div>`,
+    ptr: `<h4>Fiche — les pointeurs en C</h4><h5>En bref</h5><p>Un <strong>pointeur</strong> contient une <strong>adresse mémoire</strong>.</p><h5>À retenir</h5><ul><li><code>&amp;x</code> : adresse de x · <code>*p</code> : valeur pointée</li><li><code>int *p = &amp;x;</code> puis <code>*p = 4;</code> modifie x.</li><li>Tableau = pointeur vers son 1er élément.</li></ul><div class="callout"><strong>Piège</strong> : déréférencer <code>NULL</code> ou un pointeur non initialisé.</div>` },
+  exos: {
+    xss: `<h4>Exercices — XSS</h4><h5>1. Repérer</h5><p><code>echo "Bonjour " . $_GET['nom'];</code> est-il vulnérable ? Quel lien l'exploite ?</p><h5>2. Corriger</h5><p>Réécris la ligne pour qu'elle soit sûre.</p><details><summary>Correction</summary><p>Oui (réfléchie) : <code>?nom=&lt;script&gt;…</code>. Correction : <code>htmlspecialchars($_GET['nom'], ENT_QUOTES)</code>.</p></details>`,
+    osi: `<h4>Exercices — OSI</h4><h5>1. Associer</h5><p>Switch, routeur, câble RJ45, HTTP : à quelle couche ?</p><details><summary>Correction</summary><p>2, 3, 1, 7.</p></details>`,
+    ptr: `<h4>Exercices — pointeurs</h4><h5>1. Prédire</h5><p><code>int x=3, *p=&amp;x; *p+=2;</code> Que vaut x ?</p><details><summary>Correction</summary><p>5 : <code>*p</code> est x lui-même.</p></details>` },
+  qcm: {
+    xss: `<h4>QCM — XSS</h4><p><strong>1.</strong> Où s'exécute le code injecté ?<br>a) serveur · b) base de données · <strong>c) navigateur</strong> · d) pare-feu</p><p><strong>2.</strong> Quelle protection est insuffisante seule ?<br>a) encodage · <strong>b) bloquer &lt;script&gt;</strong> · c) CSP · d) cookies HttpOnly</p>`,
+    osi: `<h4>QCM — OSI</h4><p><strong>1.</strong> Couche de l'adresse IP ?<br>a) 2 · <strong>b) 3</strong> · c) 4 · d) 7</p>`,
+    ptr: `<h4>QCM — pointeurs</h4><p><strong>1.</strong> <code>*p</code> donne…<br>a) l'adresse de p · <strong>b) la valeur pointée</strong> · c) la taille</p>` },
+  web: {
+    xss: `<h4>+ Section ajoutée : Contourner les filtres</h4><div class="callout">Ajouté depuis le web : ne vient pas du cours, à vérifier.</div><ul><li>Attributs d'événement : <code>onerror</code>, <code>onload</code>, <code>onfocus</code>.</li><li>Polyglottes et encodages (entités HTML, unicode).</li></ul>`,
+    osi: `<h4>+ Section ajoutée : OSI et TCP/IP</h4><div class="callout">Ajouté depuis le web : ne vient pas du cours, à vérifier.</div><ul><li>TCP/IP fusionne 5-6-7 en « Application » et 1-2 en « Accès réseau ».</li></ul>`,
+    ptr: `<h4>+ Section ajoutée : pointeurs et const</h4><div class="callout">Ajouté depuis le web : ne vient pas du cours, à vérifier.</div><ul><li><code>const int *p</code> : valeur non modifiable · <code>int *const p</code> : pointeur fixe.</li></ul>` },
+};
+const SRC = { xss: ["/securite-web/vulnerabilites/xss", "/securite-web/protocoles/http"], osi: ["/reseaux/modeles/osi"], ptr: ["/langage-c/pointeurs"] };
+let type = "fiche", tache = 0;
+document.querySelectorAll(".chip").forEach(b => b.onclick = () => {
+  document.querySelectorAll(".chip").forEach(x => x.setAttribute("aria-pressed", x === b));
+  type = b.dataset.t;
+});
+
+async function taper(el, html) {  // écrit le HTML élément par élément, comme une génération en direct
+  const tmp = document.createElement("div"); tmp.innerHTML = html; el.replaceChildren();
+  const id = ++tache, lent = !matchMedia("(prefers-reduced-motion: reduce)").matches;
+  for (const node of [...tmp.childNodes]) {
+    if (id !== tache) return;
+    const copie = node.cloneNode(true), texte = copie.textContent; el.append(copie);
+    if (lent && copie.nodeType === 1 && copie.children.length === 0 && texte.length < 400) {
+      copie.textContent = "";
+      for (let i = 0; i < texte.length; i += 3) { if (id !== tache) return; copie.textContent = texte.slice(0, i + 3); await new Promise(r => setTimeout(r, 8)); }
+    } else if (lent) await new Promise(r => setTimeout(r, 120));
+  }
+}
+
+$("#go").onclick = async () => {
+  const s = $("#sujet").value, st = $("#st"), out = $("#out");
+  st.textContent = type === "web" ? "recherche web…" : `lecture de ${SRC[s].length} page(s) du wiki…`;
+  out.innerHTML = '<span class="caret"></span>';
+  await new Promise(r => setTimeout(r, 700));
+  st.textContent = "Claude rédige…";
+  await taper(out, DEMO[type][s]);
+  const src = document.createElement("div"); src.className = "src";
+  src.textContent = type === "web" ? "Sources web : documentation officielle (démo)" : `Sources : ${SRC[s].join(" · ")}`;
+  out.append(src);
+  st.textContent = type === "web" ? "✓ section ajoutée à la page" : "✓ enregistrée dans le wiki";
+};
+
+$("#copy").onclick = async () => {
+  const txt = [...$("#cmds").childNodes].filter(n => !(n.classList && (n.classList.contains("p") || n.classList.contains("c")))).map(n => n.textContent).join("").replace(/ +\n/g, "\n").trim();
+  try { await navigator.clipboard.writeText(txt); $("#copy").textContent = "Copié ✓"; } catch { $("#copy").textContent = "Sélectionne et copie"; }
+  setTimeout(() => $("#copy").textContent = "Copier", 2000);
+};
+</script>
+</body>
+</html>
