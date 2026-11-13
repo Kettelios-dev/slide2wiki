@@ -127,6 +127,8 @@ def run(d, step=lambda s: None):
     Ne lève jamais : une erreur imprévue (réponse illisible…) tuerait le fil de traitement et bloquerait la file."""
     try:
         return _run(d, step)
+    except w.Annule:
+        return "annulé", "annulé : rien n'a été écrit dans le wiki", "", None
     except Exception as e:
         traceback.print_exc()
         return "erreur", f"{type(e).__name__}: {gitsync.hide(str(e))[:300]}", "", None
@@ -239,7 +241,6 @@ def save(path, text, message, step):
     subprocess.run(["git", "-C", str(w.WIKI), "commit", "-q", "-m", message], check=True)
     if not gitsync.push():
         return "envoi Git en attente"
-    step("Wiki.js : import de la page")
     return {True: "visible dans Wiki.js", False: "visible à la prochaine synchro de Wiki.js",
             None: "visible à la prochaine synchro de Wiki.js (5 min au plus)"}[gitsync.notify_wikijs()]
 

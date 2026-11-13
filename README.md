@@ -70,6 +70,11 @@ Dépôt injoignable avant un cours : le PDF reste « en attente », rien n'est p
 
 Mettre tous les cours d'une matière dans la même matière : c'est ce qui permet de compléter les pages au lieu de les dupliquer.
 
+### Annuler, retirer un cours
+
+- **Annuler** (sur un travail en file ou en cours) : en file, il est retiré tout de suite ; en cours, il s'arrête à la fin de l'étape en cours (tranche Docling ou appel à Claude), **sans rien écrire dans le wiki**. Le PDF va dans `data/inbox/_annules/` ; les parties déjà rédigées sont gardées, un nouveau dépôt du même PDF les reprend sans repayer.
+- **Retirer du wiki** (sur un cours de l'historique, mauvais PDF ou mauvaise matière) : son commit est annulé (`git revert`) : pages créées supprimées, pages complétées remises comme avant, aussi dans Wiki.js. Si une de ces pages a été modifiée depuis (autre cours, édition dans Wiki.js), rien n'est fait et ces pages sont listées. Le PDF va dans `_annules/` et peut être redéposé dans la bonne matière.
+
 ### Demander sur ses cours
 
 Sous la zone de dépôt, **Demander sur mes cours** : choisir ce que tu veux (**fiche de révision**, **exercices corrigés**, **synthèse**, **QCM** ou **réponse à une question**), la matière, le sujet (« le modèle OSI », « les pointeurs »…) et des précisions si besoin (« niveau examen », « 15 questions »).

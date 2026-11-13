@@ -49,6 +49,8 @@
   .etat.ok { color: var(--ok); } .etat.attente, .etat.interrompu { color: var(--warn); } .etat.erreur { color: var(--err); }
   h2 .compte { font-weight: 400; color: var(--muted); font-size: 13px; }
   progress { grid-column: 1 / -1; width: 100%; height: 6px; accent-color: var(--accent); }
+  li .act { grid-column: 1 / -1; justify-self: start; margin-top: 4px; }
+  .etat.annulé, .etat.retiré { color: var(--muted); }
   .vide { padding: 14px; color: var(--muted); font-size: 14px; }
   section.demande { margin-top: 36px; padding: 20px; background: var(--card); border: 1px solid var(--line); border-radius: 12px; }
   section.demande h2 { margin-top: 0; }
@@ -198,6 +200,9 @@ async function rafraichir() {
       const li = el("li");
       li.append(el("span", "nom", j.nom), el("span", "etat " + j.etat, j.etat),
                 el("span", "meta", [j.matiere || (j.demande ? "" : "matière devinée"), j.detail, heure(j.t)].filter(Boolean).join(" · ")));
+      if (["en file", "en cours"].includes(j.etat))
+        li.append(action(j.annuler ? "Annulation demandée…" : "Annuler", !!j.annuler, `/api/annuler?id=${j.id}`,
+                         j.etat === "en cours" && "Arrêter ce traitement ? Il s'arrête à la fin de l'étape en cours, sans rien écrire dans le wiki."));
       ul.append(li);
     }
   } catch {}
@@ -218,9 +223,25 @@ async function historique() {
       li.append(el("span", "nom", r.nom), el("span", "etat " + r.etat, r.etat),
                 el("span", "meta", [r.matiere || (r.demande ? "" : "matière devinée"), `${r.demande ? "demandé" : "déposé"} le ${date(r.depot)}`,
                                     r.fin && r.fin > r.depot && `terminé en ${duree(r.fin - r.depot)}`, r.detail].filter(Boolean).join(" · ")));
+      if (r.etat === "ok" && !r.demande)
+        li.append(action("Retirer du wiki", false, `/api/retirer?id=${encodeURIComponent(r.id)}`,
+                         `Retirer « ${r.nom} » du wiki ? Les pages créées par ce cours seront supprimées et celles qu'il a complétées remises comme avant. Le PDF ira dans inbox/_annules.`));
       ul.append(li);
     }
   } catch {}
+}
+
+function action(texte, inactif, url, confirmation) {  // bouton Annuler / Retirer d'une ligne
+  const b = el("button", "act", texte);
+  b.disabled = inactif;
+  b.onclick = async () => {
+    if (confirmation && !confirm(confirmation)) return;
+    b.disabled = true;
+    const r = await fetch(url, { method: "POST" });
+    if (!r.ok) alert((await r.json().catch(() => ({}))).erreur || `HTTP ${r.status}`);
+    rafraichir();
+  };
+  return b;
 }
 
 async function matieres() {

@@ -423,12 +423,36 @@ def process(pdf, step=lambda s: None, matiere=None):
     subprocess.run(["git", "-C", str(w.WIKI), "commit", "-q", "--allow-empty", "-m", msg + "\n\n" + "\n".join(rapport)], check=True)
     state_path.unlink()
     pushed = gitsync.push()  # échec : le commit est gardé et renvoyé au prochain cours, le cours est quand même fini
-    if pushed:
-        step("Wiki.js : import des nouvelles pages")
+    if pushed:  # pas de step() ici : le cours est écrit, une annulation n'a plus de sens
         gitsync.notify_wikijs()  # sans clé API Wiki.js : il les verra à sa synchro suivante
     print(f"OK {msg}", flush=True)
     return len(overlay), (f"{created} créées, {len(overlay) - created} complétées" + (f", {len(broken)} liens cassés" if broken else "")
                           + ("" if pushed else ", envoi vers le dépôt Git en attente"))
+
+
+def remove(name, step=lambda s: None):
+    """Retire du wiki le cours <name> (PDF ajouté par erreur) : `git revert` de son dernier commit, donc pages créées
+    supprimées et pages complétées remises comme avant. Une page modifiée depuis (autre cours, édition dans Wiki.js)
+    n'est jamais écrasée : rien n'est fait et ces pages sont listées. Rend (etat, détail)."""
+    git = lambda *a: subprocess.run(["git", "-C", str(w.WIKI), *a], capture_output=True, text=True, encoding="utf-8")
+    sync(step, "récupération du wiki")
+    sha = git("log", "-1", "--format=%H", "--fixed-strings", f"--grep=cours: {name} (").stdout.strip()
+    if not sha:
+        return "erreur", f"aucun commit du cours {name} dans le wiki"
+    if git("log", "-1", "--format=%H", "--fixed-strings", f"--grep=annule {sha[:7]}").stdout.strip():
+        return "erreur", f"le cours {name} a déjà été retiré"  # sinon un 2e retrait remettrait les pages
+    files = [l.split("\t") for l in git("show", "--format=", "--name-status", sha).stdout.splitlines() if l.strip()]
+    r = git("revert", "--no-edit", sha)
+    if r.returncode:
+        git("revert", "--abort")
+        later = git("diff", "--name-only", sha, "HEAD", "--", *[f[-1] for f in files]).stdout.split()
+        return "erreur", ("pages modifiées depuis ce cours, rien n'a été supprimé : " + ", ".join(f"/{p[:-3]}" for p in later[:8])
+                          if later else f"retrait impossible : {(r.stderr or r.stdout).strip()[-200:]}")
+    git("commit", "--amend", "-q", "-m", f"suppression du cours: {name}\n\nannule {sha[:7]}")
+    created = sum(f[0] == "A" for f in files)
+    if gitsync.push():
+        gitsync.notify_wikijs()
+    return "ok", f"cours retiré du wiki : {created} page(s) supprimée(s), {len(files) - created} remise(s) comme avant"
 
 
 def selftest():
@@ -490,7 +514,38 @@ def selftest():
         assert w.cache_path(a) != w.cache_path(b) and w.cache_path(a) == w.cache_path(a)
         assert w.cache_path(a).name.startswith("Cours 1-") and w.cache_path(a).with_suffix(".claude.json").suffix == ".json"
     selftest_process(t)
+    selftest_remove(t)
     print("selftest OK")
+
+
+def selftest_remove(t):
+    """Retrait d'un cours : pages créées supprimées, page complétée remise comme avant, pas de 2e retrait,
+    rien de fait si une page a été modifiée depuis."""
+    import tempfile
+    saved, saved_remote = w.WIKI, gitsync.REMOTE
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            w.WIKI, gitsync.REMOTE = Path(d), ""
+            git = lambda *a: subprocess.run(["git", "-C", d, *a], check=True, capture_output=True, encoding="utf-8").stdout
+            git("init", "-q", "-b", "main"); git("config", "user.email", "t@t"); git("config", "user.name", "t")
+            (w.WIKI / "web").mkdir()
+            (w.WIKI / "web/http.md").write_text(t, encoding="utf-8"); git("add", "-A"); git("commit", "-qm", "init")
+            (w.WIKI / "web/xss.md").write_text(t, encoding="utf-8")
+            (w.WIKI / "web/http.md").write_text(t + "complété\n", encoding="utf-8")
+            git("add", "-A"); git("commit", "-qm", "cours: mauvais.pdf (1 créées, 1 complétées)")
+            (w.WIKI / "web/csrf.md").write_text(t, encoding="utf-8"); git("add", "-A"); git("commit", "-qm", "cours: bon.pdf (1 créées, 0 complétées)")
+            etat, detail = remove("mauvais.pdf")
+            assert etat == "ok" and "1 page(s) supprimée(s), 1 remise(s)" in detail, detail
+            assert not (w.WIKI / "web/xss.md").exists() and (w.WIKI / "web/http.md").read_text(encoding="utf-8") == t
+            assert (w.WIKI / "web/csrf.md").exists()  # l'autre cours est intact
+            assert git("log", "-1", "--format=%s").strip() == "suppression du cours: mauvais.pdf"
+            assert remove("mauvais.pdf") == ("erreur", "le cours mauvais.pdf a déjà été retiré")
+            (w.WIKI / "web/csrf.md").write_text(t + "édité dans Wiki.js\n", encoding="utf-8"); git("commit", "-qam", "docs: update")
+            etat, detail = remove("bon.pdf")  # page modifiée depuis : rien n'est fait
+            assert etat == "erreur" and "/web/csrf" in detail and "édité" in (w.WIKI / "web/csrf.md").read_text(encoding="utf-8")
+            assert git("status", "--porcelain") == "" and remove("absent.pdf")[0] == "erreur"
+    finally:
+        w.WIKI, gitsync.REMOTE = saved, saved_remote
 
 
 def selftest_process(t):

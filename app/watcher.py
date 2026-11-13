@@ -15,7 +15,7 @@ except ImportError:  # PyMuPDF absent (apt install python3-fitz) : cours découp
 
 ROOT = Path(os.environ.get("COURS_ROOT", "/srv/cours"))
 INBOX, MD, WIKI = ROOT / "inbox", ROOT / "md", ROOT / "wiki"
-DONE, FAILED = INBOX / "_traites", INBOX / "_erreurs"
+DONE, FAILED, CANCELLED = INBOX / "_traites", INBOX / "_erreurs", INBOX / "_annules"
 DOCLING = os.environ.get("DOCLING_URL", "http://localhost:5001")
 PAGE_MARK = "<!-- page-break -->"
 DOCLING_PAGES = 10  # ~1 à 3 min par tranche sur 2 cœurs pour des diapos avec images
@@ -88,9 +88,13 @@ def read_plan(pdf):
         return {"methode": "aucune", "raison": str(e)}
 
 
+class Annule(Exception):
+    """Traitement annulé depuis la page : levé au pas suivant, avant toute écriture dans le wiki."""
+
+
 def pending():
     for pdf in sorted(INBOX.rglob("*.pdf")):
-        if DONE in pdf.parents or FAILED in pdf.parents:
+        if any(part.startswith("_") for part in pdf.relative_to(INBOX).parts[:-1]):  # _traites, _erreurs, _annules
             continue
         if time.time() - pdf.stat().st_mtime > 15:  # copie terminée (pas modifié depuis 15 s)
             yield pdf
@@ -113,6 +117,9 @@ def handle(pdf, step=lambda s: None):
     except integrer.Attente as e:  # quota atteint, jeton absent, Claude injoignable
         print(f"en attente : {e}", flush=True)
         return "attente", str(e)
+    except Annule:  # parties déjà payées gardées (md/…claude.json) : un nouveau dépôt du PDF reprend sans repayer
+        move(pdf, CANCELLED)
+        return "annulé", "annulé : rien n'a été écrit dans le wiki, PDF rangé dans inbox/_annules"
     except (requests.ConnectionError, requests.Timeout) as e:
         print(f"Docling injoignable, PDF laissé dans inbox: {e}", flush=True)
         return "attente", "Docling injoignable (conteneur docling démarré ?)"

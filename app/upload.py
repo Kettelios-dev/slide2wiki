@@ -5,11 +5,12 @@ Un seul fil de traitement (Docling sur 2 cœurs, et un seul cours à la fois éc
 inbox/ n'est relu que sur dépôt ou sur clic « Relancer les PDF en attente ».
 Pas d'authentification : à n'exposer que sur le réseau local.
 """
-import json, os, queue, re, subprocess, threading, time
+import json, os, queue, re, subprocess, threading, time, traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 import demandes
+import integrer
 import watcher as w
 
 PORT = int(os.environ.get("UPLOAD_PORT", "8000"))
@@ -82,9 +83,10 @@ def add_job(pdf):
         if job and job["etat"] == "attente":  # relance : on réutilise la ligne existante
             jobs.remove(job)
             job.update(etat="en file", detail="", t=time.time())
+            job.pop("annuler", None)
         else:
             job = {"id": str(time.time_ns()), "nom": pdf.name, "matiere": pdf.parent.name if pdf.parent != w.INBOX else "",
-                   "etat": "en file", "detail": "", "t": time.time(), "depot": time.time()}
+                   "etat": "en file", "detail": "", "t": time.time(), "depot": time.time(), "pdf": str(pdf)}
             by_path[str(pdf)] = job
         jobs.append(job)
         log(job)
@@ -105,12 +107,78 @@ def add_request(d):
     return job
 
 
+def stepper(job):
+    """Avancement affiché sur la page ; lève Annule au pas suivant si l'annulation a été demandée."""
+    def step(s):
+        if job.get("annuler"):
+            raise w.Annule()
+        job["detail"] = s
+    return step
+
+
+def cancel(jid):
+    """En file : retiré tout de suite (PDF rangé dans inbox/_annules). En cours : arrêté au pas suivant, avant toute
+    écriture dans le wiki. Rend le travail, ou None s'il est introuvable ou déjà fini."""
+    with lock:
+        job = next((j for j in jobs if j["id"] == jid), None)
+        if not job or job["etat"] not in ("en file", "en cours"):
+            return None
+        job["annuler"] = True
+        if job["etat"] == "en cours":
+            job["detail"] = "annulation demandée : arrêt à la fin de l'étape en cours…"
+            return job
+        if job.get("pdf") and Path(job["pdf"]).exists():
+            w.move(Path(job["pdf"]), w.CANCELLED)
+        job.update(etat="annulé", detail="retiré de la file", t=time.time())
+        log(job, fin=job["t"])
+        return job
+
+
+def add_removal(row):
+    """Retirer du wiki un cours déjà ajouté (mauvais PDF, mauvaise matière) : passe par la file, comme le reste."""
+    with lock:
+        job = {"id": str(time.time_ns()), "nom": f"Retrait : {row['nom']}", "matiere": row.get("matiere", ""),
+               "etat": "en file", "detail": "", "t": time.time(), "depot": time.time(), "demande": True, "retrait": True}
+        jobs.append(job)
+        log(job)
+    todo.put((job, row))
+    return job
+
+
+def run_removal(job, row):
+    etat, detail = integrer.remove(row["nom"], step=stepper(job))
+    if etat == "ok":
+        pdf = w.DONE / row.get("matiere", "") / row["nom"]
+        if pdf.exists():  # hors de _traites : le même PDF peut être redéposé dans la bonne matière
+            w.move(pdf, w.CANCELLED)
+        log({k: row.get(k, "") for k in ("id", "nom", "matiere", "depot")} | {"etat": "retiré", "detail": detail})
+        with lock:  # l'historique affiche l'état en mémoire des travaux de cette session : lui aussi
+            for j in jobs:
+                if j["id"] == row["id"]:
+                    j.update(etat="retiré", detail=detail)
+    return etat, detail
+
+
 def worker():
     while True:
-        job, pdf = todo.get()
-        if job.get("demande"):
+        job, item = todo.get()
+        with lock:  # annulé pendant qu'il attendait : déjà retiré, rien à faire
+            if job.get("annuler"):
+                continue
             job["etat"] = "en cours"
-            etat, detail, page, path = demandes.run(pdf, step=lambda s: job.update(detail=s))
+        if job.get("retrait"):
+            try:
+                etat, detail = run_removal(job, item)
+            except w.Annule:
+                etat, detail = "annulé", "annulé : rien n'a été retiré"
+            except Exception as e:  # jamais de fil mort : la file resterait bloquée
+                traceback.print_exc(); etat, detail = "erreur", f"{type(e).__name__}: {e}"
+            with lock:
+                job.update(etat=etat, detail=detail, t=time.time())
+                log(job, fin=job["t"])
+            continue
+        if job.get("demande"):
+            etat, detail, page, path = demandes.run(item, step=stepper(job))
             with lock:
                 results[job["id"]] = {"markdown": page, "chemin": path}
                 for old in list(results)[:-20]:
@@ -118,11 +186,10 @@ def worker():
                 job.update(etat=etat, detail=detail, t=time.time())
                 log(job, fin=job["t"])
             continue
-        if not pdf.exists():  # déjà traité par un job précédent (relance en double)
+        if not item.exists():  # déjà traité par un job précédent (relance en double)
             etat, detail = "ok", "déjà traité"
         else:
-            job["etat"] = "en cours"
-            etat, detail = w.handle(pdf, step=lambda s: job.update(detail=s))
+            etat, detail = w.handle(item, step=stepper(job))
         with lock:
             job.update(etat=etat, detail=detail, t=time.time())
             log(job, fin=job["t"])
@@ -179,6 +246,16 @@ class H(BaseHTTPRequestHandler):
             en_file = {str(p) for _, p in list(todo.queue)}
             n = [add_job(p) for p in w.pending() if str(p) not in en_file]
             return self.send(200, {"relances": len(n)})
+        if u.path == "/api/retirer":  # retirer du wiki un cours de l'historique
+            hid = parse_qs(u.query).get("id", [""])[0]
+            with lock:
+                row = next((r for r in history(live={j["id"]: j for j in jobs}) if r["id"] == hid), None)
+            if not row or row["etat"] != "ok" or row.get("demande"):
+                return self.send(409, {"erreur": "seul un cours traité (état ok) peut être retiré"})
+            return self.send(200, add_removal(row))
+        if u.path == "/api/annuler":
+            job = cancel(parse_qs(u.query).get("id", [""])[0])
+            return self.send(200, job) if job else self.send(409, {"erreur": "travail introuvable ou déjà terminé"})
         if u.path == "/api/demande":
             try:
                 d = json.loads(self.rfile.read(min(int(self.headers.get("Content-Length") or 0), 20000)) or b"{}")
@@ -251,6 +328,32 @@ def selftest():
         assert (r["etat"], r["detail"]) == ("en cours", "conversion Docling pages 1-10/97")  # état en direct
     c = last_commits("30 cours: a.pdf (23 créées, 0 complétées)\n20 suppression des notes de a.pdf\n10 cours: a.pdf (60 notions)")
     assert c == {"a.pdf": (30.0, "23 créées, 0 complétées")}  # le plus récent gagne
+    global HISTORY
+    saved = HISTORY, w.INBOX, w.CANCELLED
+    with tempfile.TemporaryDirectory() as d:  # annulation : en file -> retiré et PDF rangé ; en cours -> arrêté au pas suivant
+        HISTORY, w.INBOX = Path(d) / "h.jsonl", Path(d) / "inbox"
+        w.CANCELLED = w.INBOX / "_annules"
+        pdf = w.INBOX / "reseau" / "c.pdf"; pdf.parent.mkdir(parents=True); pdf.write_bytes(b"%PDF-")
+        queued = {"id": "q", "nom": "c.pdf", "matiere": "reseau", "etat": "en file", "detail": "", "depot": 1, "pdf": str(pdf)}
+        running = {"id": "r", "nom": "d.pdf", "matiere": "", "etat": "en cours", "detail": "", "depot": 2}
+        jobs[:] = [queued, running]
+        assert cancel("q")["etat"] == "annulé" and not pdf.exists() and (w.CANCELLED / "reseau" / "c.pdf").exists()
+        assert cancel("r")["etat"] == "en cours" and running["annuler"]
+        try:
+            stepper(running)("Claude : partie 2/3"); assert False
+        except w.Annule:
+            pass
+        assert cancel("q") is None and cancel("inconnu") is None  # déjà fini / introuvable
+        # retrait : l'état « retiré » est vu dans l'historique même si le cours a été traité dans cette session
+        done = {"id": "o", "nom": "o.pdf", "matiere": "", "etat": "ok", "detail": "", "depot": 3}
+        jobs[:] = [done]
+        real = integrer.remove
+        integrer.remove = lambda name, step: ("ok", "cours retiré")
+        assert run_removal({"id": "x", "etat": "en cours"}, dict(done)) == ("ok", "cours retiré")
+        integrer.remove = real
+        assert next(r for r in history(live={j["id"]: j for j in jobs}) if r["id"] == "o")["etat"] == "retiré"
+        jobs.clear()
+    HISTORY, w.INBOX, w.CANCELLED = saved
     print("selftest OK")
 
 
